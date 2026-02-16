@@ -47,3 +47,6 @@ logs/
 .docker/
 
 PLAN.md
+phase_*.md
+tranad/
+latex-source/

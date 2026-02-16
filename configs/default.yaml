@@ -2,18 +2,19 @@
 model:
   window_size: 10
   n_features: 38
-  n_heads: 8
+  n_heads: 38
   n_encoder_layers: 1
   n_decoder_layers: 1
+  d_feedforward: 16
   dropout: 0.1
 
 training:
   epochs: 5
   batch_size: 128
-  learning_rate: 0.001
+  learning_rate: 0.0001
   weight_decay: 0.00001
   scheduler_step: 5
-  scheduler_gamma: 0.5
+  scheduler_gamma: 0.9
   val_split: 0.15
 
 scoring:
