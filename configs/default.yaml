@@ -1,0 +1,35 @@
+# TranAD Default Configuration
+model:
+  window_size: 10
+  n_features: 38
+  n_heads: 8
+  n_encoder_layers: 1
+  n_decoder_layers: 1
+  dropout: 0.1
+
+training:
+  epochs: 5
+  batch_size: 128
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  scheduler_step: 5
+  scheduler_gamma: 0.5
+  val_split: 0.15
+
+scoring:
+  threshold_method: "pot"  # pot, percentile, f1_max
+  percentile: 99
+  pot_risk_level: 0.001
+
+data:
+  dataset: "smd"
+  raw_dir: "data/smd/raw"
+  processed_dir: "data/smd/processed"
+
+streaming:
+  kafka_topic: "telemetry_stream"
+  message_delay_seconds: 0.1
+
+docker:
+  device: "cpu"
+  model_path: "models/tranad"
