@@ -462,3 +462,208 @@ class TranADScorer:
                     ndcg_scores.append(hit)
             res[f"NDCG@{p}%"] = float(np.mean(ndcg_scores)) if ndcg_scores else 0.0
         return res
+
+    # ── Feature Attribution ────────────────────────────────────────────
+
+    @staticmethod
+    def compute_feature_baselines(
+        train_scores: np.ndarray,
+        percentile: float = 95.0,
+        floor: float = 1e-8,
+    ) -> np.ndarray:
+        """Compute per-feature baseline scores from training data.
+
+        The baseline represents "normal" reconstruction error for each feature.
+        Features that are inherently harder to reconstruct have higher baselines.
+        Elevation-ratio normalization (score / baseline) removes the bias toward
+        always-high-error features.
+
+        Args:
+            train_scores: Training set per-dimension scores, shape (N_train, n_features).
+            percentile: Percentile to use as baseline (default: 95th).
+            floor: Minimum baseline value to avoid division by zero.
+
+        Returns:
+            Baseline scores, shape (n_features,). Each value >= floor.
+        """
+        baselines = np.percentile(train_scores, percentile, axis=0)  # (F,)
+        baselines = np.maximum(baselines, floor)
+        return baselines
+
+    @staticmethod
+    def attribute_dimensions(
+        segment_scores: np.ndarray,
+        baselines: np.ndarray,
+        min_elevation: float = 2.0,
+        contribution_threshold: float = 0.80,
+        max_features: int = 10,
+        feature_labels: list[str] | None = None,
+    ) -> list[dict]:
+        """Attribute an anomaly segment to specific feature dimensions.
+
+        Ranks features by their mean elevation ratio (score / baseline) across
+        the segment, and returns the top contributors that explain at least
+        ``contribution_threshold`` of the total excess score.
+
+        Args:
+            segment_scores: Per-dimension scores for the segment,
+                shape (T, n_features) where T is the segment length.
+            baselines: Per-feature baselines, shape (n_features,).
+            min_elevation: Minimum mean elevation ratio for inclusion.
+            contribution_threshold: Include features until cumulative
+                contribution reaches this fraction.
+            max_features: Hard cap on number of attributed features.
+            feature_labels: Human-readable labels per feature.
+                Defaults to "dim_{i}".
+
+        Returns:
+            List of dicts ordered by mean_elevation descending, each with:
+                'dim': int, 'label': str, 'mean_elevation': float,
+                'contribution': float.
+            Empty list if no features exceed min_elevation or total excess
+            is negligible.
+        """
+        n_features = segment_scores.shape[1]
+        if feature_labels is None:
+            feature_labels = [f"dim_{i}" for i in range(n_features)]
+
+        # Mean elevation ratio per feature across the segment
+        elevation_ratios = segment_scores / baselines  # (T, F)
+        mean_elevation = np.mean(elevation_ratios, axis=0)  # (F,)
+
+        # Contribution: feature's share of total excess score across segment
+        excess = np.maximum(segment_scores - baselines, 0)  # (T, F)
+        feature_excess = np.sum(excess, axis=0)  # (F,)
+        total_excess = np.sum(feature_excess)
+
+        if total_excess < 1e-12:
+            return []
+
+        contributions = feature_excess / total_excess  # (F,)
+
+        # Rank by mean elevation descending
+        ranked_indices = np.argsort(mean_elevation)[::-1]
+
+        attributed = []
+        cumulative_contribution = 0.0
+
+        for idx in ranked_indices:
+            idx = int(idx)
+            if mean_elevation[idx] < min_elevation:
+                break
+            if len(attributed) >= max_features:
+                break
+            attributed.append({
+                "dim": idx,
+                "label": feature_labels[idx],
+                "mean_elevation": round(float(mean_elevation[idx]), 4),
+                "contribution": round(float(contributions[idx]), 4),
+            })
+            cumulative_contribution += contributions[idx]
+            if cumulative_contribution >= contribution_threshold:
+                break
+
+        return attributed
+
+    @staticmethod
+    def find_anomaly_segments(
+        predictions: np.ndarray,
+    ) -> list[tuple[int, int]]:
+        """Find contiguous runs of predicted anomalies.
+
+        Args:
+            predictions: Binary prediction vector, shape (N,).
+
+        Returns:
+            List of (start, end) tuples (inclusive on both ends).
+        """
+        binary = (np.asarray(predictions) > 0.5).astype(int)
+        padded = np.concatenate([[0], binary, [0]])
+        diffs = np.diff(padded)
+        starts = np.where(diffs == 1)[0]
+        ends = np.where(diffs == -1)[0] - 1
+        return list(zip(starts.tolist(), ends.tolist()))
+
+    @staticmethod
+    def build_segment_summaries(
+        test_scores: np.ndarray,
+        predictions: np.ndarray,
+        baselines: np.ndarray,
+        feature_labels: list[str] | None = None,
+        min_elevation: float = 2.0,
+        contribution_threshold: float = 0.80,
+    ) -> list[dict]:
+        """Build structured attribution summaries for all anomaly segments.
+
+        Args:
+            test_scores: Per-dimension test scores, shape (N_test, n_features).
+            predictions: Binary predictions, shape (N_test,).
+            baselines: Per-feature baselines, shape (n_features,).
+            feature_labels: Optional labels for features.
+            min_elevation: Passed to attribute_dimensions.
+            contribution_threshold: Passed to attribute_dimensions.
+
+        Returns:
+            List of segment summary dicts with segment_start, segment_end,
+            segment_length, peak_score, peak_timestamp, mean_score, and
+            attributed_dimensions.
+        """
+        segments = TranADScorer.find_anomaly_segments(predictions)
+        score_1d = np.mean(test_scores, axis=1)
+
+        summaries = []
+        for start, end in segments:
+            seg_scores = test_scores[start : end + 1]  # (T, F)
+            seg_1d = score_1d[start : end + 1]
+
+            peak_offset = int(np.argmax(seg_1d))
+
+            attributed = TranADScorer.attribute_dimensions(
+                seg_scores,
+                baselines,
+                min_elevation=min_elevation,
+                contribution_threshold=contribution_threshold,
+                feature_labels=feature_labels,
+            )
+
+            summaries.append({
+                "segment_start": int(start),
+                "segment_end": int(end),
+                "segment_length": int(end - start + 1),
+                "peak_score": round(float(seg_1d[peak_offset]), 6),
+                "peak_timestamp": int(start + peak_offset),
+                "mean_score": round(float(np.mean(seg_1d)), 6),
+                "attributed_dimensions": attributed,
+            })
+
+        return summaries
+
+    @staticmethod
+    def diagnose_with_elevation(
+        test_scores: np.ndarray,
+        interp_labels: np.ndarray,
+        baselines: np.ndarray,
+        ps: list[int] | None = None,
+    ) -> dict:
+        """Compute root cause attribution metrics using elevation-ratio ranking.
+
+        Same as diagnose(), but ranks features by elevation ratio
+        (score / baseline) instead of raw score. This should improve HitRate
+        and NDCG when some features have inherently high reconstruction error.
+
+        Args:
+            test_scores: Per-dimension scores, shape (N_test, n_features).
+            interp_labels: Per-dimension binary labels, shape (N_test, n_features).
+            baselines: Per-feature baselines, shape (n_features,).
+            ps: Percentile levels for HitRate/NDCG (default: [100, 150]).
+
+        Returns:
+            dict with 'Hit@100%_elev', 'Hit@150%_elev',
+            'NDCG@100%_elev', 'NDCG@150%_elev'.
+        """
+        if ps is None:
+            ps = [100, 150]
+
+        elevation_scores = test_scores / baselines  # (N, F)
+        raw_result = TranADScorer.diagnose(elevation_scores, interp_labels, ps)
+        return {f"{k}_elev": v for k, v in raw_result.items()}

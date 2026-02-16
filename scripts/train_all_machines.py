@@ -224,6 +224,13 @@ def main():
                 f"  F1={metrics['f1']:.4f}  P={metrics['precision']:.4f}  "
                 f"R={metrics['recall']:.4f}  AUC={metrics['roc_auc']:.4f}"
             )
+            if "Hit@100%_elev" in metrics:
+                raw_hit = metrics.get("Hit@100%", 0)
+                elev_hit = metrics["Hit@100%_elev"]
+                print(
+                    f"  Hit@100%: raw={raw_hit:.3f} elev={elev_hit:.3f} "
+                    f"delta={elev_hit - raw_hit:+.3f}"
+                )
         else:
             print(f"  Warning: eval_results.json not found")
 
@@ -265,6 +272,15 @@ def main():
                 f"{PAPER_RESULTS['avg_recall']:>8.4f}"
             )
             print(f"\nGap from paper: F1={avg_f1 - PAPER_RESULTS['avg_f1']:+.4f}")
+
+            # Elevation-ratio diagnosis summary
+            hit_raw = [results[m].get("Hit@100%", 0) for m in machines if m in results and "Hit@100%" in results[m]]
+            hit_elev = [results[m].get("Hit@100%_elev", 0) for m in machines if m in results and "Hit@100%_elev" in results[m]]
+            if hit_raw and hit_elev:
+                avg_hit_raw = np.mean(hit_raw)
+                avg_hit_elev = np.mean(hit_elev)
+                print(f"\nDiagnosis (avg Hit@100%): raw={avg_hit_raw:.4f}  "
+                      f"elev={avg_hit_elev:.4f}  delta={avg_hit_elev - avg_hit_raw:+.4f}")
         print("=" * 70)
 
         # Save summary
@@ -275,6 +291,11 @@ def main():
             "avg_precision": float(np.mean(prec_values)) if prec_values else 0,
             "avg_recall": float(np.mean(rec_values)) if rec_values else 0,
         }
+        # Add elevation diagnosis averages if available
+        hit_elev_vals = [results[m].get("Hit@100%_elev") for m in machines if m in results and "Hit@100%_elev" in results[m]]
+        if hit_elev_vals:
+            summary["avg_hit100_raw"] = float(np.mean([results[m].get("Hit@100%", 0) for m in machines if m in results and "Hit@100%" in results[m]]))
+            summary["avg_hit100_elev"] = float(np.mean(hit_elev_vals))
         with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2)
         print(f"\nSummary saved to {summary_path}")

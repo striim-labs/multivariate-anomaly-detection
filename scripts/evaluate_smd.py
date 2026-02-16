@@ -97,6 +97,13 @@ def main():
         f"mean={train_scores.mean():.6f}, max={train_scores.max():.6f}"
     )
 
+    # --- Compute per-feature baselines ---
+    baselines = TranADScorer.compute_feature_baselines(train_scores)
+    print(
+        f"  Feature baselines: shape={baselines.shape}, "
+        f"min={baselines.min():.6f}, max={baselines.max():.6f}"
+    )
+
     print(f"Scoring test data (mode={args.scoring_mode})...")
     test_scores = scorer.score_batch(
         model, test_data, config.window_size, device, args.scoring_mode
@@ -130,6 +137,41 @@ def main():
     diag = scorer.diagnose(test_scores, interp_labels)
     metrics.update(diag)
 
+    # --- Elevation-ratio diagnosis (compare with raw ranking) ---
+    print("Computing elevation-ratio diagnosis...")
+    diag_elev = scorer.diagnose_with_elevation(test_scores, interp_labels, baselines)
+    metrics.update(diag_elev)
+
+    # --- Segment-level feature attribution ---
+    print("Computing feature attribution...")
+    score_1d = np.mean(test_scores, axis=1)
+    if interp_labels.ndim == 2:
+        labels_1d = (np.sum(interp_labels, axis=1) >= 1).astype(float)
+    else:
+        labels_1d = interp_labels.astype(float)
+
+    # Raw predictions (production behavior, no labels needed)
+    raw_predictions = (score_1d > threshold).astype(float)
+    raw_segments = TranADScorer.build_segment_summaries(
+        test_scores, raw_predictions, baselines,
+    )
+
+    # Point-adjusted predictions (evaluation view, uses labels)
+    adjusted_predictions = TranADScorer._adjust_predicts(
+        score_1d, labels_1d, threshold
+    )
+    adjusted_segments = TranADScorer.build_segment_summaries(
+        test_scores, adjusted_predictions, baselines,
+    )
+
+    print(f"  Raw segments: {len(raw_segments)}, "
+          f"Adjusted segments: {len(adjusted_segments)}")
+    for i, seg in enumerate(raw_segments[:5]):
+        n_attr = len(seg["attributed_dimensions"])
+        top_dims = [d["label"] for d in seg["attributed_dimensions"][:3]]
+        print(f"  Segment {i + 1}: [{seg['segment_start']}-{seg['segment_end']}] "
+              f"peak={seg['peak_score']:.4f}, {n_attr} attributed dims: {top_dims}")
+
     # --- Print results ---
     print()
     print("=" * 60)
@@ -146,7 +188,12 @@ def main():
     )
     for key in ["Hit@100%", "Hit@150%", "NDCG@100%", "NDCG@150%"]:
         if key in metrics:
-            print(f"  {key}: {metrics[key]:.4f}")
+            elev_key = f"{key}_elev"
+            raw_val = metrics[key]
+            elev_val = metrics.get(elev_key, 0.0)
+            delta = elev_val - raw_val
+            print(f"  {key:<12s} raw={raw_val:.4f}  elev={elev_val:.4f}  delta={delta:+.4f}")
+    print(f"  Segments: {len(raw_segments)} raw, {len(adjusted_segments)} adjusted")
     print("=" * 60)
 
     # --- Save results ---
@@ -163,12 +210,23 @@ def main():
             save_metrics[k] = v
     save_metrics["method"] = args.method
     save_metrics["machine"] = args.machine
+    save_metrics["n_anomaly_segments"] = len(raw_segments)
 
     with open(output_path, "w") as f:
         json.dump(save_metrics, f, indent=2)
     print(f"\nResults saved to {output_path}")
 
-    # --- Save scorer state to registry ---
+    # --- Save attribution results ---
+    attribution_path = args.model_dir / args.machine / "attribution_results.json"
+    with open(attribution_path, "w") as f:
+        json.dump({
+            "raw_segments": raw_segments,
+            "adjusted_segments": adjusted_segments,
+        }, f, indent=2)
+    print(f"Attribution saved to {attribution_path}")
+
+    # --- Save scorer state to registry (with baselines) ---
+    cal_result["feature_baselines"] = baselines
     registry.save_scorer_state(args.machine, cal_result)
     print(f"Scorer state saved to registry")
 
