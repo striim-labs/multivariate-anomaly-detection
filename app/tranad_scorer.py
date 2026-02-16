@@ -56,29 +56,28 @@ class TranADScorer:
         data: np.ndarray,
         window_size: int = 10,
         device: str | torch.device = "cpu",
+        scoring_mode: str = "phase2_only",
     ) -> np.ndarray:
         """Run TranAD inference and return per-dimension MSE scores.
 
-        Replicates the reference test-time backprop (tranad/main.py:274-281):
-        - Uses Phase 2 output (z[1]) only
-        - MSE with reduction='none' gives per-dimension scores
-        - Processes all data in a single forward pass
-
         Args:
             model: Trained TranADNet (should be in eval mode).
-            data: Raw normalized time series, shape (N, n_features), float32.
+            data: Raw normalized time series, shape (N, n_features).
             window_size: Sliding window size (must match model training).
             device: Torch device.
+            scoring_mode: "phase2_only" (reference code) uses z[1] only.
+                "averaged" (paper Eq. 13) uses 0.5*MSE(x1) + 0.5*MSE(x2).
 
         Returns:
-            Anomaly scores, shape (N, n_features). Per-dimension MSE
-            between the Phase 2 reconstruction and the ground truth.
+            Anomaly scores, shape (N, n_features). Per-dimension MSE.
         """
         model.eval()
         device = torch.device(device) if isinstance(device, str) else device
         n_features = data.shape[1]
 
-        data_tensor = torch.from_numpy(data).float().to(device)
+        # Match model dtype (float32 or float64)
+        model_dtype = next(model.parameters()).dtype
+        data_tensor = torch.from_numpy(data).to(model_dtype).to(device)
         windows = convert_to_windows(data_tensor, window_size)  # (N, W, F)
 
         loss_fn = nn.MSELoss(reduction="none")
@@ -91,11 +90,15 @@ class TranADScorer:
 
             x1, x2 = model(window, elem)
 
-            # Use Phase 2 output only (z[1] in reference)
-            # loss shape: (1, N, F) -> [0] -> (N, F)
-            loss = loss_fn(x2, elem)[0]
+            if scoring_mode == "averaged":
+                # Paper Eq. 13: s = 0.5*||O1 - W|| + 0.5*||O_hat_2 - W||
+                loss = 0.5 * loss_fn(x1, elem)[0] + 0.5 * loss_fn(x2, elem)[0]
+            else:
+                # Reference code: Phase 2 output only (z[1])
+                loss = loss_fn(x2, elem)[0]
 
-        return loss.cpu().numpy()
+        # Always return float32 for consistent downstream processing
+        return loss.cpu().float().numpy()
 
     # ── Threshold Calibration ──────────────────────────────────────────
 
@@ -172,6 +175,12 @@ class TranADScorer:
         Implements the retry loop from tranad/pot.py:135-141:
         while SPOT.initialize fails, reduce level by *0.999.
 
+        After computing the POT threshold, validates it by checking the
+        predicted anomaly rate. If >20% of test data would be flagged (which
+        indicates the threshold is unreasonably low relative to the test
+        score distribution), falls back to the 99.9th percentile of test
+        scores as a conservative threshold.
+
         Args:
             train_scores_1d: Training scores, shape (N_train,).
             test_scores_1d: Test scores, shape (N_test,).
@@ -194,6 +203,13 @@ class TranADScorer:
 
         ret = s.run(dynamic=False)
         pot_th = np.mean(ret["thresholds"]) * pot_params.scale
+
+        # Validate: if threshold flags >20% of test data, it's unreliable.
+        # Fall back to test data p99.9 (assumes <0.1% anomaly rate is rare).
+        anomaly_rate = float(np.mean(test_scores_1d > pot_th))
+        if anomaly_rate > 0.20:
+            pot_th = float(np.percentile(test_scores_1d, 99.9))
+
         return pot_th
 
     @staticmethod

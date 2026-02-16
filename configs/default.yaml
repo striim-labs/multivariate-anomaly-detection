@@ -7,6 +7,7 @@ model:
   n_decoder_layers: 1
   d_feedforward: 16
   dropout: 0.1
+  use_layer_norm: false  # Paper Eq. 4 has LayerNorm; reference omits it
 
 training:
   epochs: 5
@@ -15,12 +16,20 @@ training:
   weight_decay: 0.00001
   scheduler_step: 5
   scheduler_gamma: 0.9
-  val_split: 0.15
+  dtype: "float32"  # "float32" or "float64"
+  loss_weighting: "epoch_inverse"  # "epoch_inverse" (1/n) or "exponential_decay" (eps^{-n})
+  epsilon: 1.01  # For exponential_decay weighting (paper Eq. 9)
+  adversarial_loss: false  # Separate L1/L2 with sign flip (paper Eq. 8-9)
+  gradient_clip_norm: 1.0  # Max gradient norm (0 to disable)
+  early_stopping_patience: 0  # 0 = disabled, >0 = epochs of patience
+  val_split: 0.2  # Fraction of training data for validation
+  max_epochs: 50  # Upper bound with early stopping
 
 scoring:
   threshold_method: "pot"  # pot, percentile, f1_max
   percentile: 99
   pot_risk_level: 0.001
+  scoring_mode: "phase2_only"  # "phase2_only" or "averaged" (paper Eq. 13)
 
 data:
   dataset: "smd"

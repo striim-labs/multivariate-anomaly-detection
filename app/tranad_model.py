@@ -25,6 +25,7 @@ class TranADConfig:
     n_heads must evenly divide d_model.
     """
 
+    # Architecture
     window_size: int = 10
     n_features: int = 38
     n_heads: int = 38
@@ -33,12 +34,28 @@ class TranADConfig:
     d_model: int = 0  # Auto-set to n_features * 2 if 0
     d_feedforward: int = 16
     dropout: float = 0.1
+    use_layer_norm: bool = False  # Paper Eq. 4 has LayerNorm; reference omits it
+
+    # Training
     lr: float = 1e-4
     weight_decay: float = 1e-5
     epochs: int = 5
     batch_size: int = 128
     scheduler_step: int = 5
     scheduler_gamma: float = 0.9
+    dtype: str = "float32"  # "float32" or "float64"
+    loss_weighting: str = "epoch_inverse"  # "epoch_inverse" (1/n) or "exponential_decay" (eps^{-n})
+    epsilon: float = 1.01  # For exponential_decay weighting (paper Eq. 9)
+    adversarial_loss: bool = False  # Separate L1/L2 with sign flip (paper Eq. 8-9)
+    gradient_clip_norm: float = 1.0  # Max gradient norm (0 = disabled)
+
+    # Early stopping
+    early_stopping_patience: int = 0  # 0 = disabled, >0 = epochs of patience
+    val_split: float = 0.2  # Fraction of training data for validation
+    max_epochs: int = 50  # Upper bound when early stopping is enabled
+
+    # Scoring
+    scoring_mode: str = "phase2_only"  # "phase2_only" or "averaged" (paper Eq. 13)
 
     def __post_init__(self):
         if self.d_model == 0:
@@ -160,6 +177,96 @@ class TransformerDecoderLayer(nn.Module):
         return tgt
 
 
+class TransformerEncoderLayerLN(nn.Module):
+    """Encoder layer WITH LayerNorm (paper-faithful variant, Eq. 4).
+
+    Adds LayerNorm after each residual connection:
+      src = LayerNorm(src + dropout(self_attn(src)))
+      src = LayerNorm(src + dropout(ffn(src)))
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 16,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.activation = nn.LeakyReLU(True)
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        src_mask: torch.Tensor | None = None,
+        src_key_padding_mask: torch.Tensor | None = None,
+        is_causal: bool = False,
+    ) -> torch.Tensor:
+        src2 = self.self_attn(src, src, src)[0]
+        src = self.norm1(src + self.dropout1(src2))
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = self.norm2(src + self.dropout2(src2))
+        return src
+
+
+class TransformerDecoderLayerLN(nn.Module):
+    """Decoder layer WITH LayerNorm (paper-faithful variant, Eq. 5).
+
+    Adds LayerNorm after each residual connection:
+      tgt = LayerNorm(tgt + dropout(self_attn(tgt)))
+      tgt = LayerNorm(tgt + dropout(cross_attn(tgt, memory)))
+      tgt = LayerNorm(tgt + dropout(ffn(tgt)))
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int = 16,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.multihead_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+        self.activation = nn.LeakyReLU(True)
+
+    def forward(
+        self,
+        tgt: torch.Tensor,
+        memory: torch.Tensor,
+        tgt_mask: torch.Tensor | None = None,
+        memory_mask: torch.Tensor | None = None,
+        tgt_key_padding_mask: torch.Tensor | None = None,
+        memory_key_padding_mask: torch.Tensor | None = None,
+        tgt_is_causal: bool = False,
+        memory_is_causal: bool = False,
+    ) -> torch.Tensor:
+        tgt2 = self.self_attn(tgt, tgt, tgt)[0]
+        tgt = self.norm1(tgt + self.dropout1(tgt2))
+        tgt2 = self.multihead_attn(tgt, memory, memory)[0]
+        tgt = self.norm2(tgt + self.dropout2(tgt2))
+        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
+        tgt = self.norm3(tgt + self.dropout3(tgt2))
+        return tgt
+
+
 class TranADNet(nn.Module):
     """Full TranAD architecture with two-phase self-conditioning.
 
@@ -185,9 +292,17 @@ class TranADNet(nn.Module):
         d_ff = config.d_feedforward
         dropout = config.dropout
 
+        # Select layer classes based on LayerNorm config
+        if config.use_layer_norm:
+            EncLayerClass = TransformerEncoderLayerLN
+            DecLayerClass = TransformerDecoderLayerLN
+        else:
+            EncLayerClass = TransformerEncoderLayer
+            DecLayerClass = TransformerDecoderLayer
+
         self.pos_encoder = PositionalEncoding(d_model, dropout, config.window_size)
 
-        encoder_layer = TransformerEncoderLayer(
+        encoder_layer = EncLayerClass(
             d_model=d_model, nhead=nhead, dim_feedforward=d_ff, dropout=dropout
         )
         self.transformer_encoder = nn.TransformerEncoder(
@@ -196,14 +311,14 @@ class TranADNet(nn.Module):
             enable_nested_tensor=False,
         )
 
-        decoder_layer1 = TransformerDecoderLayer(
+        decoder_layer1 = DecLayerClass(
             d_model=d_model, nhead=nhead, dim_feedforward=d_ff, dropout=dropout
         )
         self.transformer_decoder1 = nn.TransformerDecoder(
             decoder_layer1, num_layers=config.n_decoder_layers
         )
 
-        decoder_layer2 = TransformerDecoderLayer(
+        decoder_layer2 = DecLayerClass(
             d_model=d_model, nhead=nhead, dim_feedforward=d_ff, dropout=dropout
         )
         self.transformer_decoder2 = nn.TransformerDecoder(
@@ -211,6 +326,10 @@ class TranADNet(nn.Module):
         )
 
         self.fcn = nn.Sequential(nn.Linear(d_model, config.n_features), nn.Sigmoid())
+
+        # Convert to float64 if configured
+        if config.dtype == "float64":
+            self.double()
 
     def encode(
         self, src: torch.Tensor, c: torch.Tensor, tgt: torch.Tensor

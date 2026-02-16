@@ -47,6 +47,13 @@ def main():
     parser.add_argument("--pot-level", type=float, default=0.99995)
     parser.add_argument("--pot-scale", type=float, default=1.06)
     parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument(
+        "--scoring-mode",
+        type=str,
+        default="phase2_only",
+        choices=["phase2_only", "averaged"],
+        help="Scoring mode: phase2_only (reference) or averaged (paper Eq. 13)",
+    )
     args = parser.parse_args()
 
     device = auto_device(args.device)
@@ -81,18 +88,18 @@ def main():
     # --- Score train and test data ---
     scorer = TranADScorer()
 
-    print("Scoring training data...")
+    print(f"Scoring training data (mode={args.scoring_mode})...")
     train_scores = scorer.score_batch(
-        model, train_data.astype(np.float32), config.window_size, device
+        model, train_data, config.window_size, device, args.scoring_mode
     )
     print(
         f"  Train scores: shape={train_scores.shape}, "
         f"mean={train_scores.mean():.6f}, max={train_scores.max():.6f}"
     )
 
-    print("Scoring test data...")
+    print(f"Scoring test data (mode={args.scoring_mode})...")
     test_scores = scorer.score_batch(
-        model, test_data.astype(np.float32), config.window_size, device
+        model, test_data, config.window_size, device, args.scoring_mode
     )
     print(
         f"  Test scores: shape={test_scores.shape}, "
