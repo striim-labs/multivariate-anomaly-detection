@@ -25,16 +25,6 @@ uv run python scripts/download_smd.py
 
 # Preprocess: normalize and generate per-machine artifacts
 uv run python scripts/preprocess_smd.py
-
-# Train all 4 reference machines (machine-1-1, machine-2-1, machine-3-2, machine-3-7)
-uv run python scripts/train_all_machines.py \
-    --loss-weighting exponential_decay \
-    --lr 0.0001 \
-    --epochs 20
-
-# Start the API server
-PYTHONPATH=app MODEL_PATH=models/tranad DATA_DIR=data/smd/processed \
-    uv run python app/main.py
 ```
 
 The server starts at `http://localhost:8000`. Interactive API docs at `http://localhost:8000/docs`.
@@ -166,17 +156,6 @@ curl -X POST http://localhost:8000/score \
     -H 'Content-Type: application/json' \
     -d @samples/score_request.json
 
-# Score with all options
-curl -X POST http://localhost:8000/score \
-    -H 'Content-Type: application/json' \
-    -d '{
-        "store_id": 1,
-        "device_id": 1,
-        "data": [[0.075, 0.066, ...], ...],
-        "include_per_timestep": true,
-        "include_attribution": true,
-        "scoring_mode": "averaged"
-    }'
 ```
 
 ## Project Structure
@@ -281,20 +260,13 @@ uv run python scripts/train_smd.py \
 ### Train All Reference Devices
 
 ```bash
-uv run python scripts/train_all_machines.py \
-    --loss-weighting exponential_decay \
-    --lr 0.0001 \
-    --epochs 20
+uv run python scripts/train_all_machines.py 
 ```
 
 ### Evaluate and Calibrate Threshold
 
 ```bash
-uv run python scripts/evaluate_smd.py \
-    --machine machine-1-1 \
-    --method pot \
-    --pot-level 0.99995 \
-    --pot-scale 1.06
+uv run python scripts/evaluate_smd.py 
 ```
 
 This generates `scorer_state.json` (the POT-calibrated threshold and per-feature baselines) which the API needs for inference.
