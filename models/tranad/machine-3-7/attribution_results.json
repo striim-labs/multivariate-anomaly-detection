@@ -1,0 +1,56 @@
+{
+  "raw_segments": [
+    {
+      "segment_start": 21276,
+      "segment_end": 21304,
+      "segment_length": 29,
+      "peak_score": 1786.920898,
+      "peak_timestamp": 21289,
+      "mean_score": 368.933167,
+      "attributed_dimensions": [
+        {
+          "dim": 16,
+          "label": "dim_16",
+          "mean_elevation": 47276328.0,
+          "contribution": 0.7625
+        },
+        {
+          "dim": 17,
+          "label": "dim_17",
+          "mean_elevation": 4079316.5,
+          "contribution": 0.0327
+        },
+        {
+          "dim": 8,
+          "label": "dim_8",
+          "mean_elevation": 523412.1875,
+          "contribution": 0.1369
+        }
+      ]
+    }
+  ],
+  "adjusted_segments": [
+    {
+      "segment_start": 21200,
+      "segment_end": 21510,
+      "segment_length": 311,
+      "peak_score": 1786.920898,
+      "peak_timestamp": 21289,
+      "mean_score": 61.29438,
+      "attributed_dimensions": [
+        {
+          "dim": 16,
+          "label": "dim_16",
+          "mean_elevation": 4434926.5,
+          "contribution": 0.4305
+        },
+        {
+          "dim": 4,
+          "label": "dim_4",
+          "mean_elevation": 461666.875,
+          "contribution": 0.4643
+        }
+      ]
+    }
+  ]
+}

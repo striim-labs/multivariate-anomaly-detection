@@ -1,0 +1,17 @@
+services:
+  # ============================================
+  # APP - FastAPI server + TranAD scoring
+  # ============================================
+  app:
+    build: ./app
+    container_name: tranad-rest
+    ports:
+      - "8000:8000"
+    environment:
+      MODEL_PATH: models/tranad
+      DATA_DIR: data/smd/processed
+      DEVICE: ${DEVICE:-cpu}
+      PRELOAD_MACHINES: ${PRELOAD_MACHINES:-}
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data:ro
