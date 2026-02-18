@@ -1,0 +1,32 @@
+# Two-cluster demo deployment
+# Each service is an isolated cluster running the same image with different config.
+#
+# Usage:
+#   docker compose -f docker-compose.demo.yml up --build
+#   # Then in another terminal:
+#   uv run python scripts/demo_live.py
+
+services:
+  cluster-store-2:
+    build: ./app
+    container_name: cluster-store-2
+    ports:
+      - "8000:8000"
+    environment:
+      PRELOAD_MACHINES: machine-2-1
+      DEVICE: cpu
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data:ro
+
+  cluster-store-3:
+    build: ./app
+    container_name: cluster-store-3
+    ports:
+      - "8001:8000"
+    environment:
+      PRELOAD_MACHINES: machine-3-2
+      DEVICE: cpu
+    volumes:
+      - ./models:/app/models:ro
+      - ./data:/app/data:ro

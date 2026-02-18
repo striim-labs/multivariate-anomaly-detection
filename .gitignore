@@ -43,6 +43,9 @@ plots/
 logs/
 *.log
 
+# Generated demo data
+samples/demo/
+
 # Docker
 .docker/
 

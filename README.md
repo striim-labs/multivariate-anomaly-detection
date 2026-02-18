@@ -34,13 +34,6 @@ The server starts at `http://localhost:8000`. Interactive API docs at `http://lo
 ```bash
 # Build and run (single command)
 docker compose -f docker-compose.rest.yml up --build
-
-# With model preloading (avoids cold-start latency on first request)
-PRELOAD_MACHINES=machine-1-1,machine-2-1 \
-    docker compose -f docker-compose.rest.yml up --build
-
-# Detached mode
-docker compose -f docker-compose.rest.yml up --build -d
 ```
 
 The Docker image is ~500 MB (Python 3.11-slim + PyTorch + FastAPI). It mounts `./models` and `./data` as read-only volumes — the container never writes to them.
@@ -215,10 +208,7 @@ services:
       - ./data:/app/data:ro        # Normalization params (read-only)
 ```
 
-The Dockerfile uses `uv` for fast dependency installation and copies only the Python modules needed for inference. No Java, Spark, or Kafka dependencies are included.
-
-**`docker-compose.yml`** — Full streaming stack (future Kafka/Spark integration):
-Includes Zookeeper, Kafka, Spark Master/Worker, a telemetry producer, and the app service.
+The Dockerfile uses `uv` for fast dependency installation and copies only the Python modules needed for inference. 
 
 ## Configuration
 
