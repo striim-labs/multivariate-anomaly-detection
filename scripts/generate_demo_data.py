@@ -24,6 +24,7 @@ import re
 import signal
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -59,11 +60,14 @@ def build_request(
     store_id: int,
     device_id: int,
     window: np.ndarray,
+    filename: str,
 ) -> dict:
     """Build a scoring request dict matching samples/score_request.json format."""
     return {
         "store_id": store_id,
         "device_id": device_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "filename": filename,
         "data": window.tolist(),
         "include_per_timestep": False,
         "include_attribution": True,
@@ -162,9 +166,8 @@ examples:
         row_end = row_start + WINDOW_SIZE
         window = data[row_start:row_end]
 
-        request = build_request(store_id, device_id, window)
-
         filename = f"score_request_{i}.json"
+        request = build_request(store_id, device_id, window, filename)
         filepath = output_dir / filename
 
         with open(filepath, "w") as f:

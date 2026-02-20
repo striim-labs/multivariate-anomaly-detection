@@ -98,6 +98,14 @@ class ScoringRequest(BaseModel):
         examples=[1],
         ge=1,
     )
+    timestamp: str | None = Field(
+        default=None,
+        description="ISO 8601 timestamp of when the data batch was produced",
+    )
+    filename: str | None = Field(
+        default=None,
+        description="Source filename for tracing (echoed in response)",
+    )
     data: list[list[float]] = Field(
         ...,
         description=(
@@ -160,6 +168,10 @@ class ScoringResponse(BaseModel):
 
     store_id: int = Field(..., description="Echo of the requested store_id")
     device_id: int = Field(..., description="Echo of the requested device_id")
+    filename: str | None = Field(
+        default=None,
+        description="Echo of the source filename (if provided in request)",
+    )
     n_timesteps: int = Field(..., description="Number of timesteps scored")
     n_features: int = Field(..., description="Number of features per timestep")
     threshold: float = Field(
