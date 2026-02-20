@@ -113,6 +113,12 @@ examples:
         default=0,
         help="Stop after N files (default: 0 = generate until data exhausted)",
     )
+    parser.add_argument(
+        "--skip-to",
+        type=int,
+        default=0,
+        help="Skip to this row before starting (default: 0)",
+    )
     args = parser.parse_args()
 
     # Parse machine ID and load data
@@ -120,6 +126,8 @@ examples:
     data = load_raw_data(args.data_dir, args.machine)
 
     # Calculate windows
+    skip_to = args.skip_to
+    data = data[skip_to:]
     total_windows = len(data) // WINDOW_SIZE
     if total_windows == 0:
         console.print("[red]Not enough data rows for even one window[/red]")
@@ -143,6 +151,8 @@ examples:
     console.print(f"  Windows:    {num_files:,} files of {WINDOW_SIZE} rows each")
     console.print(f"  Output:     {output_dir.resolve()}")
     console.print(f"  Interval:   {args.interval}s between writes")
+    if skip_to > 0:
+        console.print(f"  Skip to:    row {skip_to}")
     console.print()
 
     # Graceful Ctrl+C
@@ -164,6 +174,8 @@ examples:
 
         row_start = i * WINDOW_SIZE
         row_end = row_start + WINDOW_SIZE
+        abs_row_start = skip_to + row_start
+        abs_row_end = skip_to + row_end - 1
         window = data[row_start:row_end]
 
         filename = f"score_request_{i}.json"
@@ -178,7 +190,7 @@ examples:
 
         console.print(
             f"  [green]Wrote[/green] {filename}"
-            f"  [dim](rows {row_start}-{row_end - 1},"
+            f"  [dim](rows {abs_row_start}-{abs_row_end},"
             f" {remaining:,} remaining)[/dim]"
         )
 

@@ -322,6 +322,7 @@ async def score(request: ScoringRequest):
     return ScoringResponse(
         store_id=store_id,
         device_id=device_id,
+        timestamp=request.timestamp,
         filename=request.filename,
         n_timesteps=len(data),
         n_features=cfg.n_features,

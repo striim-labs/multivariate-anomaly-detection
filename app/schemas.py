@@ -168,6 +168,10 @@ class ScoringResponse(BaseModel):
 
     store_id: int = Field(..., description="Echo of the requested store_id")
     device_id: int = Field(..., description="Echo of the requested device_id")
+    timestamp: str | None = Field(
+        default=None,
+        description="Echo of the request timestamp (if provided)",
+    )
     filename: str | None = Field(
         default=None,
         description="Echo of the source filename (if provided in request)",
