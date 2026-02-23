@@ -498,6 +498,7 @@ class TranADScorer:
         contribution_threshold: float = 0.80,
         max_features: int = 10,
         feature_labels: list[str] | None = None,
+        batch_data: np.ndarray | None = None,
     ) -> list[dict]:
         """Attribute an anomaly segment to specific feature dimensions.
 
@@ -515,6 +516,10 @@ class TranADScorer:
             max_features: Hard cap on number of attributed features.
             feature_labels: Human-readable labels per feature.
                 Defaults to "dim_{i}".
+            batch_data: Full normalized input data for the batch,
+                shape (N, n_features).  When provided, ``mean_value``
+                (mean across entire batch) and ``extreme_value`` (value
+                furthest from the mean) are included per attributed dim.
 
         Returns:
             List of dicts ordered by mean_elevation descending, each with:
@@ -553,12 +558,21 @@ class TranADScorer:
                 break
             if len(attributed) >= max_features:
                 break
-            attributed.append({
+            entry = {
                 "dim": idx,
                 "label": feature_labels[idx],
                 "mean_elevation": round(float(mean_elevation[idx]), 4),
                 "contribution": round(float(contributions[idx]), 4),
-            })
+            }
+            if batch_data is not None:
+                dim_values = batch_data[:, idx]
+                mean_val = float(np.mean(dim_values))
+                extreme_val = float(
+                    dim_values[np.argmax(np.abs(dim_values - mean_val))]
+                )
+                entry["mean_value"] = round(mean_val, 6)
+                entry["extreme_value"] = round(extreme_val, 6)
+            attributed.append(entry)
             cumulative_contribution += contributions[idx]
             if cumulative_contribution >= contribution_threshold:
                 break
@@ -592,6 +606,7 @@ class TranADScorer:
         feature_labels: list[str] | None = None,
         min_elevation: float = 2.0,
         contribution_threshold: float = 0.80,
+        normalized_data: np.ndarray | None = None,
     ) -> list[dict]:
         """Build structured attribution summaries for all anomaly segments.
 
@@ -602,6 +617,9 @@ class TranADScorer:
             feature_labels: Optional labels for features.
             min_elevation: Passed to attribute_dimensions.
             contribution_threshold: Passed to attribute_dimensions.
+            normalized_data: Full normalized input array, shape
+                (N_test, n_features).  Passed to attribute_dimensions
+                for mean/extreme value computation across the full batch.
 
         Returns:
             List of segment summary dicts with segment_start, segment_end,
@@ -624,6 +642,7 @@ class TranADScorer:
                 min_elevation=min_elevation,
                 contribution_threshold=contribution_threshold,
                 feature_labels=feature_labels,
+                batch_data=normalized_data,
             )
 
             summaries.append({

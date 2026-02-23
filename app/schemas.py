@@ -26,6 +26,14 @@ class AttributedDimension(BaseModel):
         ge=0.0,
         le=1.0,
     )
+    mean_value: float | None = Field(
+        default=None,
+        description="Mean normalized value of this dimension during the anomaly segment (0-1 scale)",
+    )
+    extreme_value: float | None = Field(
+        default=None,
+        description="Value furthest from the mean within the segment",
+    )
 
 
 class AnomalySegment(BaseModel):

@@ -130,7 +130,8 @@ class TranADStreamingDetector(BaseDetector):
         segments = []
         if self._baselines.size > 0 and int(predictions.sum()) > 0:
             segments = TranADScorer.build_segment_summaries(
-                scores, predictions, self._baselines
+                scores, predictions, self._baselines,
+                normalized_data=raw,
             )
 
         return {

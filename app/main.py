@@ -262,7 +262,7 @@ async def score(request: ScoringRequest):
     segments: list[AnomalySegment] = []
     if request.include_attribution and baselines.size > 0 and n_anomalies > 0:
         raw_summaries = TranADScorer.build_segment_summaries(
-            scores, predictions, baselines
+            scores, predictions, baselines, normalized_data=data
         )
         for s in raw_summaries:
             segments.append(
