@@ -127,11 +127,14 @@ class TranADStreamingDetector(BaseDetector):
         predictions = (scores_1d > self._threshold).astype(int)
 
         # Build segments with attribution
+        # History = buffer rows before the current batch; current batch for extreme_value
         segments = []
         if self._baselines.size > 0 and int(predictions.sum()) > 0:
+            n_current = len(data)
+            history = raw[:-n_current] if len(raw) > n_current else None
             segments = TranADScorer.build_segment_summaries(
                 scores, predictions, self._baselines,
-                normalized_data=raw,
+                normalized_data=raw, history_data=history,
             )
 
         return {

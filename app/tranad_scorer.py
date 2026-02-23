@@ -499,6 +499,7 @@ class TranADScorer:
         max_features: int = 10,
         feature_labels: list[str] | None = None,
         batch_data: np.ndarray | None = None,
+        history_data: np.ndarray | None = None,
     ) -> list[dict]:
         """Attribute an anomaly segment to specific feature dimensions.
 
@@ -516,10 +517,12 @@ class TranADScorer:
             max_features: Hard cap on number of attributed features.
             feature_labels: Human-readable labels per feature.
                 Defaults to "dim_{i}".
-            batch_data: Full normalized input data for the batch,
-                shape (N, n_features).  When provided, ``mean_value``
-                (mean across entire batch) and ``extreme_value`` (value
-                furthest from the mean) are included per attributed dim.
+            batch_data: Raw input data for the current batch,
+                shape (N, n_features).  Used to compute ``extreme_value``
+                (value furthest from the mean) per attributed dim.
+            history_data: Raw input data from previous batches,
+                shape (H, n_features).  Used to compute ``mean_value``
+                (baseline).  Falls back to ``batch_data`` if not provided.
 
         Returns:
             List of dicts ordered by mean_elevation descending, each with:
@@ -565,10 +568,14 @@ class TranADScorer:
                 "contribution": round(float(contributions[idx]), 4),
             }
             if batch_data is not None:
-                dim_values = batch_data[:, idx]
-                mean_val = float(np.mean(dim_values))
+                # mean_value from history (previous batches) if available,
+                # otherwise fall back to current batch
+                mean_src = history_data if history_data is not None else batch_data
+                mean_val = float(np.mean(mean_src[:, idx]))
+                # extreme_value from current batch (where the spike is)
+                batch_dim = batch_data[:, idx]
                 extreme_val = float(
-                    dim_values[np.argmax(np.abs(dim_values - mean_val))]
+                    batch_dim[np.argmax(np.abs(batch_dim - mean_val))]
                 )
                 entry["mean_value"] = round(mean_val, 6)
                 entry["extreme_value"] = round(extreme_val, 6)
@@ -607,6 +614,7 @@ class TranADScorer:
         min_elevation: float = 2.0,
         contribution_threshold: float = 0.80,
         normalized_data: np.ndarray | None = None,
+        history_data: np.ndarray | None = None,
     ) -> list[dict]:
         """Build structured attribution summaries for all anomaly segments.
 
@@ -617,9 +625,10 @@ class TranADScorer:
             feature_labels: Optional labels for features.
             min_elevation: Passed to attribute_dimensions.
             contribution_threshold: Passed to attribute_dimensions.
-            normalized_data: Full normalized input array, shape
-                (N_test, n_features).  Passed to attribute_dimensions
-                for mean/extreme value computation across the full batch.
+            normalized_data: Raw input data for the current batch,
+                shape (N_test, n_features).  Used for extreme_value.
+            history_data: Raw input data from previous batches,
+                shape (H, n_features).  Used for mean_value baseline.
 
         Returns:
             List of segment summary dicts with segment_start, segment_end,
@@ -643,6 +652,7 @@ class TranADScorer:
                 contribution_threshold=contribution_threshold,
                 feature_labels=feature_labels,
                 batch_data=normalized_data,
+                history_data=history_data,
             )
 
             summaries.append({

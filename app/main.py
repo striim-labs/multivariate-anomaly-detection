@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -51,6 +52,11 @@ device = auto_device(DEVICE)
 # Per-machine caches for norm_params and scorer_state
 _norm_params_cache: dict[str, np.ndarray] = {}
 _scorer_state_cache: dict[str, dict] = {}
+
+# Per-machine rolling buffer of raw input data for baseline computation.
+# Each deque stores individual timestep rows (np arrays of shape (n_features,)).
+ROLLING_BUFFER_BATCHES = 20  # number of previous batches (of 10 rows each)
+_raw_data_buffer: dict[str, deque] = {}
 
 # Pattern for parsing machine keys like "machine-3-7" → (3, 7)
 _MACHINE_KEY_RE = re.compile(r"^machine-(\d+)-(\d+)$")
@@ -258,11 +264,19 @@ async def score(request: ScoringRequest):
     predictions = (scores_1d > threshold).astype(int)
     n_anomalies = int(predictions.sum())
 
-    # 6. Build segments with attribution
+    # 6. Rolling buffer: snapshot history *before* appending current batch
+    buf = _raw_data_buffer.setdefault(
+        machine_key, deque(maxlen=ROLLING_BUFFER_BATCHES * cfg.window_size)
+    )
+    history = np.array(buf) if len(buf) > 0 else None
+    buf.extend(data)  # append current batch rows for future requests
+
+    # 7. Build segments with attribution
     segments: list[AnomalySegment] = []
     if request.include_attribution and baselines.size > 0 and n_anomalies > 0:
         raw_summaries = TranADScorer.build_segment_summaries(
-            scores, predictions, baselines, normalized_data=data
+            scores, predictions, baselines,
+            normalized_data=data, history_data=history,
         )
         for s in raw_summaries:
             segments.append(
