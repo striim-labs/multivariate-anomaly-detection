@@ -310,7 +310,11 @@ async def score(request: ScoringRequest):
                 )
             )
 
-    # 7. Per-timestep results (optional)
+    # 8. Per-dimension means (from history if available, else current batch)
+    mean_src = history if history is not None else data
+    dimension_means = np.mean(mean_src, axis=0).round(6).tolist()
+
+    # 9. Per-timestep results (optional)
     per_timestep = None
     if request.include_per_timestep:
         per_timestep = [
@@ -344,6 +348,7 @@ async def score(request: ScoringRequest):
         n_anomalies=n_anomalies,
         anomaly_ratio=round(n_anomalies / len(data), 6),
         anomaly_segments=segments,
+        dimension_means=dimension_means,
         per_timestep=per_timestep,
         scoring_mode=request.scoring_mode,
         threshold_method=scorer_state.get("method", "unknown"),

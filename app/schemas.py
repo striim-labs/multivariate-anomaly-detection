@@ -206,6 +206,14 @@ class ScoringResponse(BaseModel):
         default=None,
         description="Per-timestep scores (only if include_per_timestep=True in request)",
     )
+    dimension_means: list[float] = Field(
+        default_factory=list,
+        description=(
+            "Per-dimension mean value (one per feature). Computed from "
+            "previous batches when history is available, otherwise from "
+            "the current batch."
+        ),
+    )
     scoring_mode: str = Field(..., description="Scoring mode used")
     threshold_method: str = Field(
         ..., description="Method used to calibrate threshold"
