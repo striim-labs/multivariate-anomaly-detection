@@ -6,6 +6,32 @@ Trained and evaluated on the [Server Machine Dataset (SMD)](https://github.com/N
 
 For a deep dive into the model architecture, training pipeline, scoring system, and design decisions, see [TECHNICAL.md](TECHNICAL.md).
 
+---
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Quick Start (Local)](#quick-start-local)
+- [Quick Start (Docker)](#quick-start-docker)
+- [API Reference](#api-reference)
+  - [Endpoints](#endpoints)
+  - [POST /score](#post-score)
+  - [Scoring Pipeline](#scoring-pipeline)
+- [Sample Requests](#sample-requests)
+- [Project Structure](#project-structure)
+- [Docker Architecture](#docker-architecture)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [Model Configuration](#model-configuration-configsdefaultyaml)
+- [Training Pipeline](#training-pipeline)
+  - [Train a Single Device](#train-a-single-device)
+  - [Train All Reference Devices](#train-all-reference-devices)
+  - [Evaluate and Calibrate Threshold](#evaluate-and-calibrate-threshold)
+  - [Device ID Mapping](#device-id-mapping)
+- [License](#license)
+
+---
+
 ## Prerequisites
 
 - **Python 3.11+**
