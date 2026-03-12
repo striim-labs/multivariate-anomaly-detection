@@ -23,8 +23,8 @@ uv run python scripts/download_smd.py && uv run python scripts/preprocess_smd.py
 # Build and start the two-cluster demo (2 FastAPI instances on ports 8000/8001)
 docker compose -f docker-compose.demo.yml up --build -d
 
-# Wait for both clusters to be ready (model loading takes a few seconds)
-sleep 10 && curl -s http://localhost:8000/health && curl -s http://localhost:8001/health
+# Wait for both clusters to be ready (may take 30s+ on first build)
+bash -c 'for p in 8000 8001; do printf "Waiting for port $p..."; while ! curl -sf http://localhost:$p/health >/dev/null 2>&1; do sleep 2; printf "."; done; echo " ready!"; done'
 
 # Run the live anomaly detection demo (streams telemetry + shows detections)
 uv run python scripts/demo_live.py
