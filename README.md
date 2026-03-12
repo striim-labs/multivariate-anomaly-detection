@@ -8,6 +8,33 @@ For a deep dive into the model architecture, training pipeline, scoring system, 
 
 ---
 
+## Quick Start
+
+```bash
+# Clone the repo
+git clone <repo-url> && cd multivariate-anomaly-detection
+
+# Install dependencies
+uv sync
+
+# Download and preprocess the SMD dataset
+uv run python scripts/download_smd.py && uv run python scripts/preprocess_smd.py
+
+# Build and start the two-cluster demo (2 FastAPI instances on ports 8000/8001)
+docker compose -f docker-compose.demo.yml up --build -d
+
+# Verify both clusters are healthy
+curl http://localhost:8000/health && curl http://localhost:8001/health
+
+# Run the live anomaly detection demo (streams telemetry + shows detections)
+uv run python scripts/demo_live.py
+
+# To skip ahead to where anomalies happen:
+#   uv run python scripts/demo_live.py --skip-to 6400 --max-ticks 20 --interval 0.3
+```
+
+---
+
 ## Table of Contents
 
 - [Prerequisites](#prerequisites)
