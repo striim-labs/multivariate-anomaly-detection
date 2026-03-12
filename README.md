@@ -8,7 +8,33 @@ For a deep dive into the model architecture, training pipeline, scoring system, 
 
 ---
 
-## Quick Start
+## Table of Contents
+
+- [Quick Start (Demo)](#quick-start-demo)
+- [Quick Start (API Only)](#quick-start-api-only)
+- [Prerequisites](#prerequisites)
+- [API Reference](#api-reference)
+  - [Endpoints](#endpoints)
+  - [POST /score](#post-score)
+  - [Scoring Pipeline](#scoring-pipeline)
+- [Sample Requests](#sample-requests)
+- [Project Structure](#project-structure)
+- [Docker Architecture](#docker-architecture)
+- [Configuration](#configuration)
+  - [Environment Variables](#environment-variables)
+  - [Model Configuration](#model-configuration-configsdefaultyaml)
+- [Training Pipeline](#training-pipeline)
+  - [Train a Single Device](#train-a-single-device)
+  - [Train All Reference Devices](#train-all-reference-devices)
+  - [Evaluate and Calibrate Threshold](#evaluate-and-calibrate-threshold)
+  - [Device ID Mapping](#device-id-mapping)
+- [License](#license)
+
+---
+
+## Quick Start (Demo)
+
+Launches a two-cluster deployment with a live streaming demo that sends real telemetry and displays anomaly detections with root cause attribution.
 
 ```bash
 # Clone the repo
@@ -33,29 +59,33 @@ uv run python scripts/demo_live.py
 #   uv run python scripts/demo_live.py --skip-to 6400 --max-ticks 20 --interval 0.3
 ```
 
----
+## Quick Start (API Only)
 
-## Table of Contents
+Launches a single FastAPI instance for REST integration. No demo UI — just the scoring API.
 
-- [Prerequisites](#prerequisites)
-- [Quick Start (Local)](#quick-start-local)
-- [Quick Start (Docker)](#quick-start-docker)
-- [API Reference](#api-reference)
-  - [Endpoints](#endpoints)
-  - [POST /score](#post-score)
-  - [Scoring Pipeline](#scoring-pipeline)
-- [Sample Requests](#sample-requests)
-- [Project Structure](#project-structure)
-- [Docker Architecture](#docker-architecture)
-- [Configuration](#configuration)
-  - [Environment Variables](#environment-variables)
-  - [Model Configuration](#model-configuration-configsdefaultyaml)
-- [Training Pipeline](#training-pipeline)
-  - [Train a Single Device](#train-a-single-device)
-  - [Train All Reference Devices](#train-all-reference-devices)
-  - [Evaluate and Calibrate Threshold](#evaluate-and-calibrate-threshold)
-  - [Device ID Mapping](#device-id-mapping)
-- [License](#license)
+```bash
+# Clone the repo
+git clone <repo-url> && cd multivariate-anomaly-detection
+
+# Install dependencies
+uv sync
+
+# Download and preprocess the SMD dataset
+uv run python scripts/download_smd.py && uv run python scripts/preprocess_smd.py
+
+# Build and start the API (single container on port 8000)
+docker compose -f docker-compose.rest.yml up --build -d
+
+# Wait for the API to be ready
+bash -c 'printf "Waiting for API..."; while ! curl -sf http://localhost:8000/health >/dev/null 2>&1; do sleep 2; printf "."; done; echo " ready!"'
+
+# Test it
+curl -X POST http://localhost:8000/score \
+    -H 'Content-Type: application/json' \
+    -d @samples/score_request.json
+```
+
+The API serves at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
 ---
 
@@ -64,32 +94,6 @@ uv run python scripts/demo_live.py
 - **Python 3.11+**
 - **[uv](https://docs.astral.sh/uv/)** (package manager)
 - **Docker** and **Docker Compose** (for containerized deployment)
-
-## Quick Start (Local)
-
-```bash
-# Clone and install
-git clone <repo-url>
-cd multivariate-anomaly-detection
-uv sync
-
-# Download the SMD dataset (~100 MB, 28 machines x 38 features)
-uv run python scripts/download_smd.py
-
-# Preprocess: normalize and generate per-machine artifacts
-uv run python scripts/preprocess_smd.py
-```
-
-The server starts at `http://localhost:8000`. Interactive API docs at `http://localhost:8000/docs`.
-
-## Quick Start (Docker)
-
-```bash
-# Build and run (single command)
-docker compose -f docker-compose.rest.yml up --build
-```
-
-The Docker image is ~500 MB (Python 3.11-slim + PyTorch + FastAPI). It mounts `./models` and `./data` as read-only volumes — the container never writes to them.
 
 ## API Reference
 
@@ -241,6 +245,7 @@ multivariate-anomaly-detection/
 ├── samples/
 │   └── score_request.json              # Sample POST /score request
 ├── docker-compose.rest.yml             # REST-only deployment (1 service)
+├── docker-compose.demo.yml             # Two-cluster demo deployment
 ├── docker-compose.yml                  # Full streaming stack (Kafka, Spark)
 ├── TECHNICAL.md                        # Architecture deep-dive
 ├── pyproject.toml                      # Root workspace config (uv monorepo)
@@ -261,7 +266,7 @@ services:
       - ./data:/app/data:ro        # Normalization params (read-only)
 ```
 
-The Dockerfile uses `uv` for fast dependency installation and copies only the Python modules needed for inference. 
+The Dockerfile uses `uv` for fast dependency installation and copies only the Python modules needed for inference.
 
 ## Configuration
 
@@ -303,13 +308,13 @@ uv run python scripts/train_smd.py \
 ### Train All Reference Devices
 
 ```bash
-uv run python scripts/train_all_machines.py 
+uv run python scripts/train_all_machines.py
 ```
 
 ### Evaluate and Calibrate Threshold
 
 ```bash
-uv run python scripts/evaluate_smd.py 
+uv run python scripts/evaluate_smd.py
 ```
 
 This generates `scorer_state.json` (the POT-calibrated threshold and per-feature baselines) which the API needs for inference.
