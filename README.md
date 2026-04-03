@@ -62,20 +62,15 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ---
 
-## Quick Start
+## 1. Quick Start
 
 ```bash
-# Install dependencies
 uv sync
-
-# Download data, preprocess, verify setup
 uv run python code/0_verify_setup.py
-
-# Open the notebooks (main learning path)
 uv run jupyter notebook code/
 ```
 
-Step through the two notebooks in order, they are the primary way to understand this project:
+Step through the two notebooks in order — they are the primary way to understand this project:
 
 - **`1_data_exploration.ipynb`** — Visualize the 38-feature server telemetry, see where anomalies occur and which features cause them, understand why a multivariate approach is needed.
 - **`2_model_design.ipynb`** — Walk through the TranAD architecture, see a forward pass, watch a short training demo, then use the pre-trained model to score data, calibrate thresholds, and attribute root causes.
@@ -84,19 +79,15 @@ Both notebooks use the pre-trained models in `models/` read-only. No scripts nee
 
 ---
 
-## Docker Demo
+## 2. Docker Demo
 
 The repo includes a containerized FastAPI server (`code/5_streaming_app.py`) that serves the pre-trained models as a REST API. This demonstrates how TranAD would be deployed for real-time scoring — you POST raw sensor data and get back anomaly detections with per-feature root cause attribution.
-
-### Start the API
 
 ```bash
 docker compose -f docker-compose.rest.yml up --build
 ```
 
 Wait for the log line `Starting TranAD Anomaly Detection Server`, then open a **new terminal window** to test:
-
-### Test the API
 
 ```bash
 # Health check
@@ -118,16 +109,27 @@ The response includes:
 
 Interactive API docs are available at `http://localhost:8000/docs`.
 
-### Two-Cluster Demo
-
-Stop the REST container first (`docker compose -f docker-compose.rest.yml down`), then launch two isolated API instances simulating a multi-store deployment:
+Stop the container when done:
 
 ```bash
+docker compose -f docker-compose.rest.yml down
+```
+
+---
+
+## 3. Two-Cluster Demo
+
+Simulates a multi-store deployment with two isolated API instances. Stop any running containers first, then launch:
+
+```bash
+docker compose -f docker-compose.rest.yml down
 docker compose -f docker-compose.demo.yml up --build
 ```
 
 - **Port 8000** — machine-2-1 (store 2, device 1)
 - **Port 8001** — machine-3-2 (store 3, device 2)
+
+Open a **new terminal window** and score against each cluster:
 
 ```bash
 # Score against cluster 1 (port 8000 = machine-2-1)
@@ -141,11 +143,9 @@ curl -s -X POST http://localhost:8001/score \
     -d @samples/score_request_machine-3-2.json | python -m json.tool
 ```
 
-### Stop
+Stop:
 
 ```bash
-docker compose -f docker-compose.rest.yml down
-# or
 docker compose -f docker-compose.demo.yml down
 ```
 
