@@ -12,14 +12,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Install only production dependencies (no jupyter/matplotlib in container)
+# Install CPU-only PyTorch (skips ~2GB of CUDA libraries) + production deps
 RUN uv pip install --system \
+    "torch>=2.0.0" --index-url https://download.pytorch.org/whl/cpu && \
+    uv pip install --system \
     "numpy>=1.24.0" \
-    "torch>=2.0.0" \
     "fastapi>=0.104.0" \
     "uvicorn>=0.24.0" \
     "pydantic>=2.5.0" \
-    "scikit-learn>=1.3.0" \
+    "scikit-learn>=1.6.0" \
     "scipy>=1.10.0"
 
 # Copy application code

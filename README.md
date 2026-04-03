@@ -32,7 +32,7 @@ multivariate-anomaly-detection/
 │   ├── raw/                               # Original text files (28 machines)
 │   └── processed/                         # Normalized .npy arrays
 │
-├── models/tranad/                         # Trained checkpoints (per-device)
+├── models/tranad/                         # Pre-trained checkpoints (per-device)
 │   ├── machine-1-1/                       # model.ckpt + scorer_state.json
 │   ├── machine-2-1/
 │   ├── machine-3-2/
@@ -75,48 +75,95 @@ uv run python code/0_verify_setup.py
 uv run jupyter notebook code/
 ```
 
+Step through the two notebooks in order, they are the primary way to understand this project:
+
+- **`1_data_exploration.ipynb`** — Visualize the 38-feature server telemetry, see where anomalies occur and which features cause them, understand why a multivariate approach is needed.
+- **`2_model_design.ipynb`** — Walk through the TranAD architecture, see a forward pass, watch a short training demo, then use the pre-trained model to score data, calibrate thresholds, and attribute root causes.
+
+Both notebooks use the pre-trained models in `models/` read-only. No scripts need to be run beyond `0_verify_setup.py`.
+
+---
+
+## Docker Demo
+
+The repo includes a containerized FastAPI server (`code/5_streaming_app.py`) that serves the pre-trained models as a REST API. This demonstrates how TranAD would be deployed for real-time scoring — you POST raw sensor data and get back anomaly detections with per-feature root cause attribution.
+
+### Start the API
+
+```bash
+docker compose -f docker-compose.rest.yml up --build
+```
+
+Wait for the log line `Starting TranAD Anomaly Detection Server`, then open a **new terminal window** to test:
+
+### Test the API
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# List available models
+curl http://localhost:8000/models
+
+# Score telemetry data (sample contains a real anomaly from store 1, device 1)
+curl -s -X POST http://localhost:8000/score \
+    -H 'Content-Type: application/json' \
+    -d @samples/score_request.json | python -m json.tool
+```
+
+The response includes:
+- `n_anomalies` — how many timesteps were flagged
+- `anomaly_segments` — contiguous anomaly regions with start/end indices
+- `attributed_dimensions` — which features drove each anomaly, ranked by `mean_elevation` (how many times above baseline)
+
+Interactive API docs are available at `http://localhost:8000/docs`.
+
+### Two-Cluster Demo
+
+Stop the REST container first (`docker compose -f docker-compose.rest.yml down`), then launch two isolated API instances simulating a multi-store deployment:
+
+```bash
+docker compose -f docker-compose.demo.yml up --build
+```
+
+- **Port 8000** — machine-2-1 (store 2, device 1)
+- **Port 8001** — machine-3-2 (store 3, device 2)
+
+```bash
+# Score against cluster 1 (port 8000 = machine-2-1)
+curl -s -X POST http://localhost:8000/score \
+    -H 'Content-Type: application/json' \
+    -d @samples/score_request_machine-2-1.json | python -m json.tool
+
+# Score against cluster 2 (port 8001 = machine-3-2)
+curl -s -X POST http://localhost:8001/score \
+    -H 'Content-Type: application/json' \
+    -d @samples/score_request_machine-3-2.json | python -m json.tool
+```
+
+### Stop
+
+```bash
+docker compose -f docker-compose.rest.yml down
+# or
+docker compose -f docker-compose.demo.yml down
+```
+
 ---
 
 ## Workflow
 
-| File | What You Learn |
-|------|---------------|
-| `0_verify_setup.py` | Downloads SMD dataset, preprocesses all 28 machines, verifies model checkpoints |
-| `1_data_exploration.ipynb` | Visualize 38-feature server telemetry, anomaly patterns, feature correlations, why multivariate detection matters |
-| `2_model_design.ipynb` | TranAD two-phase architecture, forward pass walkthrough, training demo, scoring pipeline, POT thresholds, attribution mechanism |
-| `3_train_model.py` | Full training pipeline with early stopping, loss weighting, adversarial mode. `--all` trains all 4 reference machines |
-| `4_evaluate_model.py` | Score data, calibrate POT thresholds, compute F1/precision/recall, root cause diagnosis metrics |
-| `5_streaming_app.py` | FastAPI REST server for real-time anomaly detection with per-feature attribution |
-| `6_optimize.py` | Hyperparameter grid search over learning rate, loss weighting, scoring mode, etc. |
+| # | File | What It Does |
+|---|------|--------------|
+| 0 | `0_verify_setup.py` | Downloads SMD dataset, preprocesses all 28 machines, verifies model checkpoints exist |
+| 1 | `1_data_exploration.ipynb` | Visualize 38-feature server telemetry, anomaly patterns, feature correlations, why multivariate detection matters |
+| 2 | `2_model_design.ipynb` | TranAD two-phase architecture, forward pass demo, scoring pipeline, POT thresholds, attribution mechanism |
+| 3 | `3_train_model.py` | Full training pipeline with early stopping, loss weighting, adversarial mode |
+| 4 | `4_evaluate_model.py` | Score data, calibrate POT thresholds, compute F1/precision/recall, root cause diagnosis metrics |
+| 5 | `5_streaming_app.py` | FastAPI REST server for real-time anomaly detection with per-feature attribution |
+| 6 | `6_optimize.py` | Hyperparameter grid search over learning rate, loss weighting, scoring mode, etc. |
 
----
-
-## Docker
-
-```bash
-# REST API (single container)
-docker compose -f docker-compose.rest.yml up --build
-
-# Two-cluster demo
-docker compose -f docker-compose.demo.yml up --build
-```
-
-The API serves at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
-
----
-
-## Training
-
-```bash
-# Train a single machine
-uv run python code/3_train_model.py --machine machine-1-1 --epochs 20
-
-# Train all 4 reference machines
-uv run python code/3_train_model.py --all
-
-# Evaluate
-uv run python code/4_evaluate_model.py --machine machine-1-1
-```
+> **Note:** The repo ships with pre-trained model checkpoints in `models/tranad/`. Scripts 3 and 6 will **overwrite** them if run. To view saved evaluation results without re-scoring: `uv run python code/4_evaluate_model.py --from-saved`
 
 ---
 
