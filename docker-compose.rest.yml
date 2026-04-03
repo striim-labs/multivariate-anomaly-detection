@@ -3,7 +3,7 @@ services:
   # APP - FastAPI server + TranAD scoring
   # ============================================
   app:
-    build: ./app
+    build: .
     container_name: tranad-rest
     ports:
       - "8000:8000"

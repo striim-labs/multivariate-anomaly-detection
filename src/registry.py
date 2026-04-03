@@ -13,12 +13,19 @@ Filesystem layout:
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from tranad_model import TranADConfig, TranADNet
+import src.model
+from src.model import TranADConfig, TranADNet
+
+# Pickle compatibility: checkpoints were saved with TranADConfig pickled under
+# the old module paths. We alias both possible old paths to the new module.
+sys.modules["tranad_model"] = src.model
+sys.modules["app.tranad_model"] = src.model
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +67,6 @@ class TranADRegistry:
         Returns cached model if already loaded. The model is set to
         eval mode and moved to the specified device.
 
-        Args:
-            machine_id: Machine identifier.
-            device: Target device.
-
-        Returns:
-            (model, config) tuple.
-
         Raises:
             FileNotFoundError: If no checkpoint exists for this machine.
         """
@@ -98,12 +98,6 @@ class TranADRegistry:
     ) -> np.ndarray | None:
         """Load normalization parameters for a machine.
 
-        Looks for {machine_id}_norm_params.npy in the data directory.
-
-        Args:
-            machine_id: Machine identifier.
-            data_dir: Directory containing preprocessed data files.
-
         Returns:
             Array of shape (2, n_features) with [min_vals, max_vals],
             or None if not found.
@@ -116,9 +110,6 @@ class TranADRegistry:
     def get_scorer_state(self, machine_id: str) -> dict | None:
         """Load saved scoring state (thresholds, method, params).
 
-        Args:
-            machine_id: Machine identifier.
-
         Returns:
             Dict with scoring state, or None if not saved yet.
         """
@@ -130,10 +121,6 @@ class TranADRegistry:
 
     def save_scorer_state(self, machine_id: str, state: dict) -> Path:
         """Save scoring state (thresholds, method, params) for a machine.
-
-        Args:
-            machine_id: Machine identifier.
-            state: Dict containing at minimum 'threshold' and 'method'.
 
         Returns:
             Path to the saved scorer_state.json file.
@@ -165,12 +152,7 @@ class TranADRegistry:
         return path
 
     def clear_cache(self, machine_id: str | None = None) -> None:
-        """Remove cached models from memory.
-
-        Args:
-            machine_id: If provided, clear only that machine's cache.
-                       If None, clear all.
-        """
+        """Remove cached models from memory."""
         if machine_id is None:
             self._model_cache.clear()
         else:

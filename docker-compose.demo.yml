@@ -4,11 +4,11 @@
 # Usage:
 #   docker compose -f docker-compose.demo.yml up --build
 #   # Then in another terminal:
-#   uv run python scripts/demo_live.py
+#   uv run python code/demo_live.py
 
 services:
   cluster-store-2:
-    build: ./app
+    build: .
     container_name: cluster-store-2
     ports:
       - "8000:8000"
@@ -20,7 +20,7 @@ services:
       - ./data:/app/data:ro
 
   cluster-store-3:
-    build: ./app
+    build: .
     container_name: cluster-store-3
     ports:
       - "8001:8000"

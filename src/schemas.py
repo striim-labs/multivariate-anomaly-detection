@@ -8,7 +8,7 @@ OpenAPI/JSON schemas from these definitions at /docs.
 from pydantic import BaseModel, Field, field_validator
 
 
-# ── Nested response types ──────────────────────────────────────────
+# -- Nested response types --
 
 
 class AttributedDimension(BaseModel):
@@ -73,7 +73,7 @@ class TimestepResult(BaseModel):
     is_anomaly: bool = Field(..., description="True if score exceeds threshold")
 
 
-# ── Identifier types ─────────────────────────────────────────────
+# -- Identifier types --
 
 
 class DeviceIdentifier(BaseModel):
@@ -83,7 +83,7 @@ class DeviceIdentifier(BaseModel):
     device_id: int = Field(..., description="Device identifier within the store", ge=1)
 
 
-# ── Request ────────────────────────────────────────────────────────
+# -- Request --
 
 
 class ScoringRequest(BaseModel):
@@ -168,7 +168,7 @@ class ScoringRequest(BaseModel):
         return v
 
 
-# ── Response ───────────────────────────────────────────────────────
+# -- Response --
 
 
 class ScoringResponse(BaseModel):
@@ -220,7 +220,7 @@ class ScoringResponse(BaseModel):
     )
 
 
-# ── Auxiliary endpoint responses ───────────────────────────────────
+# -- Auxiliary endpoint responses --
 
 
 class ModelInfo(BaseModel):

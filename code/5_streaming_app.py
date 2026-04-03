@@ -4,19 +4,29 @@ TranAD Anomaly Detection Server
 Multivariate time series anomaly detection using TranAD.
 Exposes FastAPI REST endpoints for on-demand scoring with
 per-feature root cause attribution.
+
+Usage:
+    uv run uvicorn code.5_streaming_app:app --host 0.0.0.0 --port 8000
+    # or
+    uv run python code/5_streaming_app.py
 """
 
 import logging
 import os
 import re
+import sys
 import time
 from collections import deque
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
 
-from schemas import (
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.schemas import (
     AnomalySegment,
     AttributedDimension,
     ConfigResponse,
@@ -28,9 +38,9 @@ from schemas import (
     ScoringResponse,
     TimestepResult,
 )
-from tranad_registry import TranADRegistry
-from tranad_scorer import TranADScorer
-from tranad_utils import auto_device
+from src.registry import TranADRegistry
+from src.scorer import build_segment_summaries, find_anomaly_segments, score_batch
+from src.utils import auto_device
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,37 +48,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Global state ───────────────────────────────────────────────────
+# -- Global state --
 
-MODEL_DIR = os.getenv("MODEL_PATH", "models/tranad")
-DATA_DIR = os.getenv("DATA_DIR", "data/smd/processed")
+MODEL_DIR = os.getenv("MODEL_PATH", str(PROJECT_ROOT / "models" / "tranad"))
+DATA_DIR = os.getenv("DATA_DIR", str(PROJECT_ROOT / "data" / "smd" / "processed"))
 DEVICE = os.getenv("DEVICE", "cpu")
 PRELOAD_MACHINES = os.getenv("PRELOAD_MACHINES", "")
 
 registry = TranADRegistry(base_dir=MODEL_DIR)
-scorer = TranADScorer()
 device = auto_device(DEVICE)
 
-# Per-machine caches for norm_params and scorer_state
 _norm_params_cache: dict[str, np.ndarray] = {}
 _scorer_state_cache: dict[str, dict] = {}
 
-# Per-machine rolling buffer of raw input data for baseline computation.
-# Each deque stores individual timestep rows (np arrays of shape (n_features,)).
-ROLLING_BUFFER_BATCHES = 20  # number of previous batches (of 10 rows each)
+ROLLING_BUFFER_BATCHES = 20
 _raw_data_buffer: dict[str, deque] = {}
 
-# Pattern for parsing machine keys like "machine-3-7" → (3, 7)
 _MACHINE_KEY_RE = re.compile(r"^machine-(\d+)-(\d+)$")
 
 
 def _machine_key(store_id: int, device_id: int) -> str:
-    """Construct internal filesystem key from store/device IDs."""
     return f"machine-{store_id}-{device_id}"
 
 
 def _parse_machine_key(key: str) -> DeviceIdentifier | None:
-    """Parse 'machine-X-Y' into a DeviceIdentifier, or None if invalid."""
     m = _MACHINE_KEY_RE.match(key)
     if m:
         return DeviceIdentifier(store_id=int(m.group(1)), device_id=int(m.group(2)))
@@ -76,7 +79,6 @@ def _parse_machine_key(key: str) -> DeviceIdentifier | None:
 
 
 def _list_devices() -> list[DeviceIdentifier]:
-    """List all available devices from the registry."""
     devices = []
     for key in registry.list_machines():
         ident = _parse_machine_key(key)
@@ -86,7 +88,6 @@ def _list_devices() -> list[DeviceIdentifier]:
 
 
 def _loaded_devices() -> list[DeviceIdentifier]:
-    """List all currently loaded devices."""
     devices = []
     for key in _scorer_state_cache:
         ident = _parse_machine_key(key)
@@ -96,14 +97,8 @@ def _loaded_devices() -> list[DeviceIdentifier]:
 
 
 def _load_machine_resources(machine_key: str) -> None:
-    """Load and cache model, norm_params, and scorer_state for a machine.
-
-    Idempotent — safe to call multiple times.
-    """
-    # Model (cached internally by registry)
     registry.get_model(machine_key, device)
 
-    # Norm params
     if machine_key not in _norm_params_cache:
         norm_params = registry.get_norm_params(machine_key, data_dir=DATA_DIR)
         if norm_params is None:
@@ -112,7 +107,6 @@ def _load_machine_resources(machine_key: str) -> None:
             )
         _norm_params_cache[machine_key] = norm_params
 
-    # Scorer state (threshold + baselines)
     if machine_key not in _scorer_state_cache:
         scorer_state = registry.get_scorer_state(machine_key)
         if scorer_state is None:
@@ -122,7 +116,7 @@ def _load_machine_resources(machine_key: str) -> None:
         _scorer_state_cache[machine_key] = scorer_state
 
 
-# ── Lifespan ───────────────────────────────────────────────────────
+# -- Lifespan --
 
 
 @asynccontextmanager
@@ -155,12 +149,11 @@ app = FastAPI(
 )
 
 
-# ── Endpoints ──────────────────────────────────────────────────────
+# -- Endpoints --
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health():
-    """Health check endpoint."""
     loaded = _loaded_devices()
     return HealthResponse(
         status="ready" if loaded else "starting",
@@ -172,13 +165,11 @@ async def health():
 
 @app.get("/models", response_model=ModelsResponse)
 async def list_models():
-    """List available device models."""
     return ModelsResponse(devices=_list_devices())
 
 
 @app.get("/config", response_model=ConfigResponse)
 async def config():
-    """Return model configuration and status."""
     models_info = []
     for key in _scorer_state_cache:
         ident = _parse_machine_key(key)
@@ -208,73 +199,53 @@ async def config():
 
 @app.post("/score", response_model=ScoringResponse)
 async def score(request: ScoringRequest):
-    """Score a batch of telemetry data for anomalies.
-
-    Accepts raw (unnormalized) time series data. The API:
-    1. Loads the device-specific model, norm_params, and threshold
-    2. Normalizes data using training-time min/max
-    3. Runs TranAD inference to get per-dimension scores
-    4. Aggregates scores, applies threshold
-    5. Finds anomaly segments and attributes root cause features
-    """
     store_id = request.store_id
     device_id = request.device_id
-    machine_key = _machine_key(store_id, device_id)
+    machine_key_str = _machine_key(store_id, device_id)
     t_start = time.monotonic()
 
-    # 1. Load resources (lazy, cached after first call)
     try:
-        _load_machine_resources(machine_key)
+        _load_machine_resources(machine_key_str)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    model, cfg = registry.get_model(machine_key, device)
-    norm_params = _norm_params_cache[machine_key]
-    scorer_state = _scorer_state_cache[machine_key]
+    model, cfg = registry.get_model(machine_key_str, device)
+    norm_params = _norm_params_cache[machine_key_str]
+    scorer_state = _scorer_state_cache[machine_key_str]
     threshold = scorer_state["threshold"]
     baselines = np.array(scorer_state.get("feature_baselines", []))
 
-    # 2. Convert and validate input
     data = np.array(request.data, dtype=np.float64)
     if data.shape[1] != cfg.n_features:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"Feature count mismatch: model expects {cfg.n_features} features, "
-                f"got {data.shape[1]}"
-            ),
+            detail=f"Feature count mismatch: model expects {cfg.n_features}, got {data.shape[1]}",
         )
 
-    # 3. Normalize: (data - min) / (max - min + eps)
     min_vals = norm_params[0]
     max_vals = norm_params[1]
     normalized = (data - min_vals) / (max_vals - min_vals + 1e-4)
 
-    # 4. Score
-    scores = TranADScorer.score_batch(
-        model,
-        normalized,
+    scores = score_batch(
+        model, normalized,
         window_size=cfg.window_size,
         device=str(device),
         scoring_mode=request.scoring_mode,
     )
 
-    # 5. Aggregate and threshold
     scores_1d = np.mean(scores, axis=1)
     predictions = (scores_1d > threshold).astype(int)
     n_anomalies = int(predictions.sum())
 
-    # 6. Rolling buffer: snapshot history *before* appending current batch
     buf = _raw_data_buffer.setdefault(
-        machine_key, deque(maxlen=ROLLING_BUFFER_BATCHES * cfg.window_size)
+        machine_key_str, deque(maxlen=ROLLING_BUFFER_BATCHES * cfg.window_size)
     )
     history = np.array(buf) if len(buf) > 0 else None
-    buf.extend(data)  # append current batch rows for future requests
+    buf.extend(data)
 
-    # 7. Build segments with attribution
     segments: list[AnomalySegment] = []
     if request.include_attribution and baselines.size > 0 and n_anomalies > 0:
-        raw_summaries = TranADScorer.build_segment_summaries(
+        raw_summaries = build_segment_summaries(
             scores, predictions, baselines,
             normalized_data=data, history_data=history,
         )
@@ -294,7 +265,7 @@ async def score(request: ScoringRequest):
                 )
             )
     elif n_anomalies > 0:
-        seg_boundaries = TranADScorer.find_anomaly_segments(predictions)
+        seg_boundaries = find_anomaly_segments(predictions)
         for start, end in seg_boundaries:
             seg_1d = scores_1d[start : end + 1]
             peak_offset = int(np.argmax(seg_1d))
@@ -310,11 +281,9 @@ async def score(request: ScoringRequest):
                 )
             )
 
-    # 8. Per-dimension means (from history if available, else current batch)
     mean_src = history if history is not None else data
     dimension_means = np.mean(mean_src, axis=0).round(6).tolist()
 
-    # 9. Per-timestep results (optional)
     per_timestep = None
     if request.include_per_timestep:
         per_timestep = [
@@ -329,12 +298,7 @@ async def score(request: ScoringRequest):
     elapsed_ms = (time.monotonic() - t_start) * 1000
     logger.info(
         "Scored store=%d device=%d: %d timesteps, %d anomalies, %d segments, %.1fms",
-        store_id,
-        device_id,
-        len(data),
-        n_anomalies,
-        len(segments),
-        elapsed_ms,
+        store_id, device_id, len(data), n_anomalies, len(segments), elapsed_ms,
     )
 
     return ScoringResponse(

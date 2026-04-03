@@ -1,7 +1,7 @@
 [project]
 name = "multivariate-anomaly-detection"
 version = "0.1.0"
-description = "TranAD multivariate time series anomaly detection with Kafka/Spark streaming"
+description = "TranAD multivariate time series anomaly detection with per-feature root cause attribution"
 requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.24.0",
@@ -10,7 +10,14 @@ dependencies = [
     "pyyaml>=6.0",
     "tqdm>=4.65.0",
     "rich>=13.0.0",
+    "torch>=2.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.5.0",
+    "scikit-learn>=1.6.0",
+    "scipy>=1.10.0",
+    "jupyter>=1.0.0",
+    "ipykernel>=6.0.0",
+    "matplotlib>=3.7.0",
+    "plotly>=5.18.0",
 ]
-
-[tool.uv.workspace]
-members = ["app", "producer"]
