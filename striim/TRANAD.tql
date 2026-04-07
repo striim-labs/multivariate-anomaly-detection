@@ -1,0 +1,82 @@
+-- ============================================================================
+-- TRANAD: TranAD Multivariate Anomaly Detection (SMD dataset)
+--
+-- After importing, wire the OP in Flow Designer:
+--   1. Open TRANAD_SMD in Flow Designer
+--   2. Drag "Open Processor" into the workspace
+--   3. Module: TranADScorer
+--   4. Input Stream: SMDRawStream
+--   5. Output Stream: SMDResultStream
+--   6. Save
+--
+-- Prerequisites:
+--   1. Scoring API running at http://localhost:8000
+--   2. TranADScorer.scm loaded:
+--        LOAD OPEN PROCESSOR "/opt/Striim/modules/TranADScorer.scm";
+--   3. SMD raw test .txt in /tmp/tranad_test/
+--
+-- Namespace: tranad
+-- ============================================================================
+
+CREATE NAMESPACE tranad;
+USE tranad;
+
+CREATE APPLICATION TRANAD_SMD;
+
+-- ============================================================================
+-- Stage 1: Ingest raw SMD rows from .txt (38 comma-separated floats per line)
+-- Output is native Global.WAEvent (matches OP annotation)
+-- ============================================================================
+
+CREATE SOURCE SMDFileSource USING FileReader (
+  directory: '/tmp/tranad_test',
+  wildcard: 'machine*.txt',
+  positionByEOF: false
+)
+PARSE USING DSVParser (
+  columndelimiter: ',',
+  header: false
+)
+OUTPUT TO SMDRawStream;
+
+-- ============================================================================
+-- Stage 2: Open Processor (wire via Flow Designer)
+-- The OP handles parsing, windowing (10-row non-overlapping), and scoring.
+-- Input: SMDRawStream (raw CSV rows as WAEvent)
+-- Output: SMDResultStream (scored results as WAEvent)
+-- ============================================================================
+
+CREATE STREAM SMDResultStream OF Global.WAEvent;
+
+-- ============================================================================
+-- Stage 3: Format results for JSONFormatter
+--   OP output data[]: [is_anomaly, n_anomalies, threshold, anomaly_ratio,
+--                       window_start_idx, window_end_idx, top_dimension,
+--                       top_elevation]
+-- ============================================================================
+
+CREATE CQ SMDFormatResults
+INSERT INTO SMDFormattedStream
+SELECT
+  TO_STRING(data[0]) AS is_anomaly,
+  TO_STRING(data[1]) AS n_anomalies,
+  TO_STRING(data[2]) AS threshold,
+  TO_STRING(data[3]) AS anomaly_ratio,
+  TO_STRING(data[4]) AS window_start_idx,
+  TO_STRING(data[5]) AS window_end_idx,
+  TO_STRING(data[6]) AS top_dimension,
+  TO_STRING(data[7]) AS top_elevation
+FROM SMDResultStream;
+
+-- ============================================================================
+-- Stage 4: Write to JSON file
+-- ============================================================================
+
+CREATE TARGET SMDResultFile USING FileWriter (
+  directory: '/tmp/tranad_test',
+  filename: 'scored_output'
+)
+FORMAT USING JSONFormatter ()
+INPUT FROM SMDFormattedStream;
+
+END APPLICATION TRANAD_SMD;
