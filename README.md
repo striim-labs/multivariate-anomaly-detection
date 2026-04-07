@@ -38,6 +38,8 @@ multivariate-anomaly-detection/
 │   ├── machine-3-2/
 │   └── machine-3-7/
 │
+├── striim/                                # Striim integration: TQL, Open Processor, build scripts
+├── STRIIM_TRANAD.md                       # Striim deployment setup guide
 ├── configs/default.yaml                   # Model/training/scoring defaults
 ├── samples/                               # Sample API requests
 ├── docker-compose.rest.yml                # REST-only deployment
