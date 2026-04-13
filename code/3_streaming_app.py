@@ -6,9 +6,9 @@ Exposes FastAPI REST endpoints for on-demand scoring with
 per-feature root cause attribution.
 
 Usage:
-    uv run uvicorn code.5_streaming_app:app --host 0.0.0.0 --port 8000
+    uv run uvicorn code.3_streaming_app:app --host 0.0.0.0 --port 8000
     # or
-    uv run python code/5_streaming_app.py
+    uv run python code/3_streaming_app.py
 """
 
 import logging

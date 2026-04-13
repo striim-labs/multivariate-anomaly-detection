@@ -2,14 +2,18 @@
 TranAD Training Utilities
 
 Reusable training components: epoch runners, loss weighting, early stopping.
-Used by code/3_train_model.py and code/6_optimize.py.
+Used by code/1_train_model.py and code/4_grid_sweep.py.
 """
 
+import random
+
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
 from src.model import TranADConfig, TranADNet
+from src.utils import convert_to_windows
 
 
 def compute_loss_weight(epoch: int, config: TranADConfig) -> float:
@@ -123,6 +127,98 @@ def train_epoch(
             losses.append(loss.item())
 
     return sum(losses) / len(losses)
+
+
+def seed_everything(seed: int = 42) -> None:
+    """Set random seeds for reproducibility across random, numpy, and torch."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def train_full(
+    config: TranADConfig,
+    train_data: np.ndarray,
+    device: torch.device,
+    seed: int = 42,
+) -> tuple[TranADNet, int, float]:
+    """Train a TranAD model end-to-end from numpy data.
+
+    Returns (model, final_epoch, final_loss).
+    Used by both 1_train_model.py and 4_grid_sweep.py to keep
+    the training loop in one place.
+    """
+    seed_everything(seed)
+
+    torch_dtype = torch.float64 if config.dtype == "float64" else torch.float32
+    train_tensor = torch.from_numpy(train_data).to(torch_dtype)
+    windows = convert_to_windows(train_tensor, config.window_size)
+
+    use_early_stopping = config.early_stopping_patience > 0
+    if use_early_stopping:
+        n_total = windows.shape[0]
+        n_val = int(n_total * config.val_split)
+        n_train = n_total - n_val
+        train_loader = DataLoader(
+            TensorDataset(windows[:n_train]), batch_size=config.batch_size
+        )
+        val_loader = DataLoader(
+            TensorDataset(windows[n_train:]), batch_size=config.batch_size
+        )
+        stopper = EarlyStopping(patience=config.early_stopping_patience)
+        total_epochs = config.max_epochs
+    else:
+        train_loader = DataLoader(
+            TensorDataset(windows), batch_size=config.batch_size
+        )
+        val_loader = None
+        stopper = None
+        total_epochs = config.epochs
+
+    model = TranADNet(config).to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=config.lr, weight_decay=config.weight_decay
+    )
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, step_size=config.scheduler_step, gamma=config.scheduler_gamma
+    )
+    loss_fn = nn.MSELoss(reduction="none")
+
+    final_epoch = 0
+    epoch_loss = 0.0
+    for epoch in range(total_epochs):
+        epoch_loss = train_epoch(
+            model, train_loader, optimizer, loss_fn, epoch, config, device
+        )
+        scheduler.step()
+        final_epoch = epoch + 1
+
+        if use_early_stopping and val_loader is not None and stopper is not None:
+            val_loss = validate_epoch(
+                model, val_loader, loss_fn, epoch, config, device
+            )
+            lr = optimizer.param_groups[0]["lr"]
+            print(
+                f"  Epoch {final_epoch}/{total_epochs}  "
+                f"Train: {epoch_loss:.6f}  Val: {val_loss:.6f}  LR: {lr:.6f}"
+            )
+            if stopper.step(val_loss, model):
+                print(
+                    f"  Early stopping at epoch {final_epoch} "
+                    f"(patience={config.early_stopping_patience})"
+                )
+                stopper.restore_best(model)
+                break
+        else:
+            lr = optimizer.param_groups[0]["lr"]
+            print(
+                f"  Epoch {final_epoch}/{total_epochs}  "
+                f"Loss: {epoch_loss:.6f}  LR: {lr:.6f}"
+            )
+
+    return model, final_epoch, epoch_loss
 
 
 @torch.no_grad()

@@ -25,7 +25,7 @@ RUN uv pip install --system \
 
 # Copy application code
 COPY src/ src/
-COPY code/5_streaming_app.py code/5_streaming_app.py
+COPY code/3_streaming_app.py code/3_streaming_app.py
 
 # Create directories for model/data volumes
 RUN mkdir -p models data
@@ -39,4 +39,4 @@ ENV DATA_DIR=data/smd/processed
 ENV DEVICE=cpu
 
 # Run the application
-CMD ["python", "-u", "code/5_streaming_app.py"]
+CMD ["python", "-u", "code/3_streaming_app.py"]

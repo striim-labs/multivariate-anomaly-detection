@@ -89,9 +89,9 @@ def verify_models(model_dir: Path) -> bool:
         if ckpt.exists() and state.exists():
             print(f"  {machine}: model.ckpt + scorer_state.json")
         elif ckpt.exists():
-            print(f"  {machine}: model.ckpt (no scorer_state.json - run 4_evaluate_model.py)")
+            print(f"  {machine}: model.ckpt (no scorer_state.json - run code/2_evaluate_model.py)")
         else:
-            print(f"  {machine}: MISSING - run 3_train_model.py")
+            print(f"  {machine}: MISSING - run code/1_train_model.py")
             ok = False
     return ok
 
@@ -123,7 +123,7 @@ def main():
     if deps_ok and data_ok and models_ok:
         print("All checks passed! Ready to go.")
         print("\nNext steps:")
-        print("  uv run jupyter notebook code/")
+        print("  uv run python code/1_train_model.py --machine machine-1-1")
     else:
         print("Some checks failed. See above for details.")
         sys.exit(1)

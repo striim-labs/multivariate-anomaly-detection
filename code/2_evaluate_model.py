@@ -5,9 +5,10 @@ Loads a trained checkpoint, runs batch inference on train and test data,
 calibrates anomaly thresholds, and prints/saves evaluation metrics.
 
 Usage:
-    uv run python code/4_evaluate_model.py --machine machine-1-1
-    uv run python code/4_evaluate_model.py --machine machine-1-1 --method percentile
-    uv run python code/4_evaluate_model.py --all --from-saved
+    uv run python code/2_evaluate_model.py --machine machine-1-1
+    uv run python code/2_evaluate_model.py --machine machine-1-1 --method percentile
+    uv run python code/2_evaluate_model.py --all --from-saved
+    uv run python code/2_evaluate_model.py --model-dir models/tranad/best
 """
 
 import argparse
@@ -62,7 +63,7 @@ def evaluate_machine(args, machine: str) -> dict | None:
     for suffix in ["_train.npy", "_test.npy", "_interp_labels.npy"]:
         if not (data_dir / f"{machine}{suffix}").exists():
             print(f"Error: {data_dir / f'{machine}{suffix}'} not found. "
-                  f"Run code/0_verify_setup.py first.")
+                  f"Run 'uv run python code/0_verify_setup.py' first.")
             return None
 
     train_data = np.load(data_dir / f"{machine}_train.npy")
@@ -71,9 +72,12 @@ def evaluate_machine(args, machine: str) -> dict | None:
     print(f"Data: train={train_data.shape}, test={test_data.shape}, "
           f"labels={interp_labels.shape}")
 
+    # Use the scoring mode from the checkpoint config unless explicitly overridden
+    scoring_mode = args.scoring_mode or config.scoring_mode
+
     # Score train and test data
-    print(f"Scoring training data (mode={args.scoring_mode})...")
-    train_scores = score_batch(model, train_data, config.window_size, device, args.scoring_mode)
+    print(f"Scoring training data (mode={scoring_mode})...")
+    train_scores = score_batch(model, train_data, config.window_size, device, scoring_mode)
     print(f"  Train scores: shape={train_scores.shape}, "
           f"mean={train_scores.mean():.6f}, max={train_scores.max():.6f}")
 
@@ -82,8 +86,8 @@ def evaluate_machine(args, machine: str) -> dict | None:
     print(f"  Feature baselines: shape={baselines.shape}, "
           f"min={baselines.min():.6f}, max={baselines.max():.6f}")
 
-    print(f"Scoring test data (mode={args.scoring_mode})...")
-    test_scores = score_batch(model, test_data, config.window_size, device, args.scoring_mode)
+    print(f"Scoring test data (mode={scoring_mode})...")
+    test_scores = score_batch(model, test_data, config.window_size, device, scoring_mode)
     print(f"  Test scores: shape={test_scores.shape}, "
           f"mean={test_scores.mean():.6f}, max={test_scores.max():.6f}")
 
@@ -248,7 +252,7 @@ def main():
     parser.add_argument("--from-saved", action="store_true",
                         help="Show saved results without re-scoring")
     parser.add_argument("--data-dir", type=str, default="data/smd/processed")
-    parser.add_argument("--model-dir", type=str, default="models/tranad")
+    parser.add_argument("--model-dir", type=str, default="models/tranad/initial")
     parser.add_argument("--method", type=str, default="pot",
                         choices=["pot", "percentile", "f1_max"])
     parser.add_argument("--percentile", type=float, default=99.0)
@@ -256,8 +260,9 @@ def main():
     parser.add_argument("--pot-level", type=float, default=0.99995)
     parser.add_argument("--pot-scale", type=float, default=1.06)
     parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--scoring-mode", type=str, default="phase2_only",
-                        choices=["phase2_only", "averaged"])
+    parser.add_argument("--scoring-mode", type=str, default=None,
+                        choices=["phase2_only", "averaged"],
+                        help="Override scoring mode (default: read from checkpoint config)")
     args = parser.parse_args()
 
     if args.from_saved:

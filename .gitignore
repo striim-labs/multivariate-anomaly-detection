@@ -14,8 +14,6 @@ build/
 venv/
 ENV/
 
-# UV
-uv.lock
 
 # IDE
 .vscode/
@@ -36,6 +34,8 @@ htmlcov/
 # Project specific
 data/smd/raw/
 data/smd/processed/
+models/tranad/initial/
+models/tranad/best/
 *.npy
 *.pkl
 *.pt

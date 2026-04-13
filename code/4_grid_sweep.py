@@ -1,12 +1,14 @@
 """
-Hyperparameter sweep for TranAD on SMD.
+Hyperparameter grid sweep for TranAD on SMD.
 
 Runs a grid search over parameter combinations, trains a model for each,
-evaluates with POT, and saves results to a CSV.
+evaluates with POT, and saves results to a CSV. After the sweep completes,
+the winning configuration is retrained end-to-end and saved to
+models/tranad/best/ so the pre-trained reference artifacts are never touched.
 
 Usage:
-    uv run python code/6_optimize.py --machine machine-1-1 --quick
-    uv run python code/6_optimize.py --machine machine-1-1
+    uv run python code/4_grid_sweep.py --machine machine-1-1 --quick
+    uv run python code/4_grid_sweep.py --machine machine-1-1
 """
 
 import argparse
@@ -26,19 +28,25 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.model import TranADConfig, TranADNet
 from src.scorer import DEFAULT_POT_PARAMS, POTParams, calibrate_threshold, evaluate, score_batch
-from src.train import EarlyStopping, train_epoch, validate_epoch
+from src.train import EarlyStopping, seed_everything, train_epoch, train_full, validate_epoch
 from src.utils import auto_device, convert_to_windows
 
 
-QUICK_GRID = {
-    "dtype": ["float32"],
-    "loss_weighting": ["epoch_inverse", "exponential_decay"],
-    "adversarial_loss": [False, True],
-    "scoring_mode": ["phase2_only", "averaged"],
-    "lr": [0.0001, 0.001, 0.01],
-    "d_feedforward": [16, 64],
-    "use_layer_norm": [False],
-}
+# Quick grid: 5 targeted configs that progressively improve on the baseline.
+# Config 1 matches 1_train_model.py defaults (lr=0.001, unstable POT).
+# Configs 2-5 all use lr=0.0001 where POT thresholding works properly:
+#   1. Baseline (matches 1_train_model.py defaults)
+#   2. Stable lr + larger architecture
+#   3. + exponential_decay loss weighting
+#   4. + averaged scoring mode (uses both phases)
+#   5. + even larger feedforward network
+QUICK_CONFIGS = [
+    {"dtype": "float32", "loss_weighting": "epoch_inverse",     "adversarial_loss": False, "scoring_mode": "phase2_only", "lr": 0.001,  "d_feedforward": 8,  "use_layer_norm": False},
+    {"dtype": "float32", "loss_weighting": "epoch_inverse",     "adversarial_loss": False, "scoring_mode": "phase2_only", "lr": 0.0001, "d_feedforward": 16, "use_layer_norm": False},
+    {"dtype": "float32", "loss_weighting": "exponential_decay", "adversarial_loss": False, "scoring_mode": "phase2_only", "lr": 0.0001, "d_feedforward": 16, "use_layer_norm": False},
+    {"dtype": "float32", "loss_weighting": "exponential_decay", "adversarial_loss": False, "scoring_mode": "averaged",    "lr": 0.0001, "d_feedforward": 16, "use_layer_norm": False},
+    {"dtype": "float32", "loss_weighting": "exponential_decay", "adversarial_loss": False, "scoring_mode": "averaged",    "lr": 0.0001, "d_feedforward": 32, "use_layer_norm": False},
+]
 
 FULL_GRID = {
     "dtype": ["float32", "float64"],
@@ -46,7 +54,7 @@ FULL_GRID = {
     "adversarial_loss": [False, True],
     "scoring_mode": ["phase2_only", "averaged"],
     "lr": [0.0001, 0.0005, 0.001, 0.005, 0.01],
-    "d_feedforward": [16, 32, 64],
+    "d_feedforward": [8, 16, 32, 64],
     "use_layer_norm": [False, True],
 }
 
@@ -135,18 +143,110 @@ def run_trial(
     return metrics
 
 
+def retrain_best(
+    best_params: dict,
+    n_features: int,
+    train_data: np.ndarray,
+    test_data: np.ndarray,
+    labels: np.ndarray,
+    pot_params: POTParams,
+    device: torch.device,
+    output_dir: Path,
+    machine: str,
+    retrain_epochs: int,
+    seed: int,
+) -> dict:
+    """Retrain the winning config end-to-end and save to output_dir."""
+    print("\n" + "=" * 70)
+    print("RETRAINING BEST CONFIG -> saving to disk")
+    print("=" * 70)
+    print(f"Config: {', '.join(f'{k}={v}' for k, v in sorted(best_params.items()))}")
+    print(f"Destination: {output_dir / machine}")
+    print(f"Max epochs: {retrain_epochs}")
+    print()
+
+    # Retrain with early stopping so slower configs (exponential_decay) get
+    # enough epochs to converge, while fast configs don't overtrain.
+    config = TranADConfig(
+        n_features=n_features,
+        n_heads=n_features,
+        d_feedforward=best_params["d_feedforward"],
+        use_layer_norm=best_params["use_layer_norm"],
+        dtype=best_params["dtype"],
+        lr=best_params["lr"],
+        loss_weighting=best_params["loss_weighting"],
+        adversarial_loss=best_params["adversarial_loss"],
+        scoring_mode=best_params["scoring_mode"],
+        early_stopping_patience=5,
+        val_split=0.1,
+        max_epochs=retrain_epochs,
+    )
+
+    model, final_epoch, final_loss = train_full(config, train_data, device, seed=seed)
+
+    # Save checkpoint
+    ckpt_dir = output_dir / machine
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / "model.ckpt"
+    torch.save(
+        {
+            "epoch": final_epoch - 1,
+            "model_state_dict": model.state_dict(),
+            "config": config,
+            "final_loss": final_loss,
+        },
+        ckpt_path,
+    )
+    print(f"Checkpoint saved to {ckpt_path}")
+
+    # Evaluate and save results
+    train_scores = score_batch(model, train_data, config.window_size, device, config.scoring_mode)
+    test_scores = score_batch(model, test_data, config.window_size, device, config.scoring_mode)
+    cal = calibrate_threshold(
+        train_scores, test_scores, labels, method="pot", pot_params=pot_params
+    )
+    metrics = evaluate(test_scores, labels, cal["threshold"])
+
+    import json
+
+    eval_path = ckpt_dir / "eval_results.json"
+    save_metrics = {k: float(v) if hasattr(v, "item") else v for k, v in metrics.items()}
+    save_metrics["method"] = "pot"
+    save_metrics["machine"] = machine
+    with open(eval_path, "w") as f:
+        json.dump(save_metrics, f, indent=2)
+
+    # Save scorer state
+    scorer_path = ckpt_dir / "scorer_state.json"
+    with open(scorer_path, "w") as f:
+        json.dump(cal, f, indent=2, default=lambda o: float(o) if hasattr(o, "item") else o)
+
+    print(f"\nBest-config results for {machine}:")
+    print(f"  F1={metrics['f1']:.4f}  P={metrics['precision']:.4f}  "
+          f"R={metrics['recall']:.4f}  AUC={metrics['roc_auc']:.4f}")
+    print("=" * 70)
+
+    return metrics
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Hyperparameter sweep for TranAD")
+    parser = argparse.ArgumentParser(description="Hyperparameter grid sweep for TranAD")
     parser.add_argument("--machine", type=str, default="machine-1-1")
     parser.add_argument("--data-dir", type=str, default="data/smd/processed")
-    parser.add_argument("--output-dir", type=str, default="results")
+    parser.add_argument("--results-dir", type=str, default="results")
+    parser.add_argument("--output-dir", type=str, default="models/tranad/best",
+                        help="Where to save the retrained best model")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--max-sweep-epochs", type=int, default=30)
+    parser.add_argument("--retrain-epochs", type=int, default=30,
+                        help="Max epochs for the final retrain (uses early stopping)")
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     data_dir = PROJECT_ROOT / args.data_dir
+    results_dir = PROJECT_ROOT / args.results_dir
     output_dir = PROJECT_ROOT / args.output_dir
     device = auto_device(args.device)
     print(f"Device: {device}")
@@ -157,16 +257,24 @@ def main():
     n_features = train_data.shape[1]
     print(f"Data loaded: train={train_data.shape}, test={test_data.shape}")
 
-    grid = QUICK_GRID if args.quick else FULL_GRID
-    param_names = sorted(grid.keys())
-    combos = list(itertools.product(*(grid[k] for k in param_names)))
-    grid_type = "quick" if args.quick else "full"
-    print(f"Grid: {grid_type}, {len(combos)} combinations")
+    # Build the list of configs to sweep
+    if args.quick:
+        combos = QUICK_CONFIGS
+        grid_type = "quick"
+    else:
+        grid = FULL_GRID
+        param_names = sorted(grid.keys())
+        combos = [
+            dict(zip(param_names, values))
+            for values in itertools.product(*(grid[k] for k in param_names))
+        ]
+        grid_type = "full"
+    print(f"Grid: {grid_type}, {len(combos)} configurations")
 
     pot_params = DEFAULT_POT_PARAMS.get(args.machine, POTParams())
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    results_path = output_dir / f"sweep_{args.machine}_{grid_type}.csv"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    results_path = results_dir / f"sweep_{args.machine}_{grid_type}.csv"
 
     completed_trials: set[int] = set()
     if args.resume and results_path.exists():
@@ -185,8 +293,7 @@ def main():
     best_f1 = -1.0
     best_params: dict = {}
 
-    for i, values in enumerate(combos):
-        params = dict(zip(param_names, values))
+    for i, params in enumerate(combos):
         trial_num = i + 1
 
         if trial_num in completed_trials:
@@ -225,6 +332,7 @@ def main():
             ]
         except Exception as e:
             print(f"  FAILED: {e}")
+            param_names = sorted(params.keys())
             row = [trial_num] + [params.get(k, "") for k in param_names]
             row += [""] * (len(CSV_COLUMNS) - len(param_names) - 1)
             row[-1] = f"error: {e}"
@@ -241,6 +349,22 @@ def main():
         for k, v in sorted(best_params.items()):
             print(f"  {k}: {v}")
     print("=" * 70)
+
+    # Retrain the best configuration end-to-end and save to output_dir
+    if best_params:
+        retrain_best(
+            best_params=best_params,
+            n_features=n_features,
+            train_data=train_data,
+            test_data=test_data,
+            labels=labels,
+            pot_params=pot_params,
+            device=device,
+            output_dir=output_dir,
+            machine=args.machine,
+            retrain_epochs=args.retrain_epochs,
+            seed=args.seed,
+        )
 
 
 if __name__ == "__main__":

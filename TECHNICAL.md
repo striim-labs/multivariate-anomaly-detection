@@ -6,7 +6,7 @@
 
 TranAD is a transformer-based encoder-decoder model for unsupervised anomaly detection in multivariate time series. The model learns to reconstruct windows of normal data during training. At inference time, the reconstruction error between the model's output and the actual input serves as the anomaly score: windows the model cannot reconstruct well are likely anomalous.
 
-The implementation in `app/tranad_model.py` follows the architecture described in the original paper (Tuli et al., VLDB 2022) but is primarily faithful to the authors' reference code at `imperial-qore/TranAD`, which diverges from the paper in several notable ways. Where these divergences exist, both variants are implemented and selectable via `TranADConfig`.
+The implementation in `src/model.py` follows the architecture described in the original paper (Tuli et al., VLDB 2022) but is primarily faithful to the authors' reference code at `imperial-qore/TranAD`, which diverges from the paper in several notable ways. Where these divergences exist, both variants are implemented and selectable via `TranADConfig`.
 
 ### Configuration
 
@@ -25,13 +25,13 @@ The `d_model = 2 * n_features` sizing comes from the fact that the encoder conca
 
 ### Input Representation
 
-Raw time series data is preprocessed before entering the model. In `scripts/preprocess_smd.py`, each feature is min-max normalized to $[0, 1)$ using training set statistics:
+Raw time series data is preprocessed before entering the model. In `src/preprocess.py`, each feature is min-max normalized to $[0, 1)$ using training set statistics:
 
 $$x_t \leftarrow \frac{x_t - \min(\mathbf{T})}{\max(\mathbf{T}) - \min(\mathbf{T}) + \epsilon'}$$
 
 where $\min(\mathbf{T})$ and $\max(\mathbf{T})$ are per-feature vectors computed from the training series only. The same min/max values are applied to test data, meaning test values can fall outside $[0, 1)$ if the test distribution differs from training. These normalization parameters are saved as `{machine_id}_norm_params.npy` for use at inference time.
 
-The normalized series is then converted into sliding windows via `convert_to_windows()` in `app/tranad_utils.py`. For each timestamp $t$, the window $W_t$ contains the $K$ most recent observations $\{x_{t-K+1}, \dots, x_t\}$. For timestamps $t < K$ where the full history is not available, the function uses replication padding by prepending copies of $x_0$. The implementation is vectorized using `torch.Tensor.unfold` rather than a Python loop.
+The normalized series is then converted into sliding windows via `convert_to_windows()` in `src/utils.py`. For each timestamp $t$, the window $W_t$ contains the $K$ most recent observations $\{x_{t-K+1}, \dots, x_t\}$. For timestamps $t < K$ where the full history is not available, the function uses replication padding by prepending copies of $x_0$. The implementation is vectorized using `torch.Tensor.unfold` rather than a Python loop.
 
 The output shape is `(N, K, F)` where $N$ is the number of timestamps, $K$ is the window size, and $F$ is the number of features. During the forward pass, windows are permuted to `(K, N, F)` (sequence-first format expected by PyTorch's transformer modules), and the last element of each window is extracted as `elem` with shape `(1, N, F)` to serve as the reconstruction target.
 
@@ -119,7 +119,7 @@ The reference code operates in float64 throughout (calling `.double()` on the mo
 
 ### Overview
 
-The scoring system converts raw model outputs (reconstruction errors) into binary anomaly labels. It operates in three stages: score computation, threshold calibration, and label assignment. All scoring logic lives in `app/tranad_scorer.py`, with the SPOT algorithm in `app/spot.py`.
+The scoring system converts raw model outputs (reconstruction errors) into binary anomaly labels. It operates in three stages: score computation, threshold calibration, and label assignment. All scoring logic lives in `src/scorer.py`, with the SPOT algorithm in `src/spot.py`.
 
 ### Score Computation
 
@@ -149,7 +149,7 @@ Three methods are implemented in `calibrate_threshold()`:
 
 #### POT (Peaks-Over-Threshold)
 
-This is the primary method, based on Extreme Value Theory. The implementation in `app/spot.py` is adapted from the reference code, which itself is based on the SPOT algorithm by Siffer et al. (KDD 2017).
+This is the primary method, based on Extreme Value Theory. The implementation in `src/spot.py` is adapted from the reference code, which itself is based on the SPOT algorithm by Siffer et al. (KDD 2017).
 
 The calibration process works as follows. Training scores (1D, mean-aggregated) are used as the initial calibration data. SPOT sorts these scores and picks an initial threshold at the specified `level` percentile. For example, at `level=0.99`, the initial threshold is the 99th percentile of training scores. All training scores exceeding this initial threshold are collected as "excesses" (the amount by which they exceed the threshold). These excesses are fit to a Generalized Pareto Distribution (GPD) using the Grimshaw maximum likelihood estimator. The fitted GPD parameters $\gamma$ (shape) and $\sigma$ (scale) define the tail behavior of the score distribution. From these, a quantile is computed at the specified risk level $q$:
 
@@ -237,13 +237,13 @@ Both metrics operate at the per-timestamp level and are averaged across all anom
 
 ### Overview
 
-Training is orchestrated by three scripts with increasing scope: `train_smd.py` trains a single machine, `evaluate_smd.py` scores and calibrates a trained model, and `train_all_machines.py` runs both across all four reference SMD machines and produces a comparative summary.
+Training is orchestrated by two scripts: `code/1_train_model.py` trains one or all machines, and `code/2_evaluate_model.py` scores and calibrates a trained model. Running `1_train_model.py --all` trains and evaluates all four reference SMD machines and produces a comparative summary.
 
 Each machine is trained as a completely independent model. There is no parameter sharing, transfer learning, or joint training across machines. The only shared element is the hyperparameter configuration (learning rate, loss weighting, etc.), which is passed uniformly through the CLI. Threshold calibration, however, uses per-machine POT parameters.
 
 ### Data Preparation
 
-`preprocess_smd.py` loads raw SMD text files and produces normalized `.npy` arrays. For each machine:
+`code/0_verify_setup.py` (via `src/preprocess.py`) loads raw SMD text files and produces normalized `.npy` arrays. For each machine:
 
 1. Training and test data are loaded from separate text files (comma-separated, one row per timestamp, one column per feature).
 2. Per-feature min and max values are computed from the training data only.
@@ -255,7 +255,7 @@ The interpretation label format is `start-end:dim1,dim2,...` with 1-indexed posi
 
 ### Windowing
 
-At training time, `train_smd.py` converts the normalized data to sliding windows using `convert_to_windows()`. The resulting tensor has shape `(N, K, F)` where each row is a window of $K=10$ consecutive timesteps. These windows are wrapped in a `TensorDataset` and served via a `DataLoader` with configurable batch size (default 128).
+At training time, `code/1_train_model.py` converts the normalized data to sliding windows using `convert_to_windows()`. The resulting tensor has shape `(N, K, F)` where each row is a window of $K=10$ consecutive timesteps. These windows are wrapped in a `TensorDataset` and served via a `DataLoader` with configurable batch size (default 128).
 
 When early stopping is enabled (`early_stopping_patience > 0`), the windows are split chronologically into training and validation sets using `val_split` (default 0.2). The split is not shuffled since temporal ordering matters for time series.
 
@@ -326,11 +326,11 @@ The paper reports using an initial learning rate of 0.01 with a step scheduler o
 
 ### Checkpoint Saving
 
-After training completes (either via epoch limit or early stopping), the model is saved as a PyTorch checkpoint to `models/tranad/{machine_id}/model.ckpt`. The checkpoint contains the model state dict, optimizer state, scheduler state, the full `TranADConfig`, the final epoch number, and the final training loss. The `TranADRegistry` in `app/tranad_registry.py` manages loading these checkpoints with automatic caching.
+After training completes (either via epoch limit or early stopping), the model is saved as a PyTorch checkpoint to `models/tranad/{machine_id}/model.ckpt`. The checkpoint contains the model state dict, optimizer state, scheduler state, the full `TranADConfig`, the final epoch number, and the final training loss. The `TranADRegistry` in `src/registry.py` manages loading these checkpoints with automatic caching.
 
 ### Evaluation Pipeline
 
-`evaluate_smd.py` loads a trained checkpoint and runs the full scoring pipeline:
+`code/2_evaluate_model.py` loads a trained checkpoint and runs the full scoring pipeline:
 
 1. The model is loaded via `TranADRegistry.get_model()`, which deserializes the config and weights and sets the model to eval mode.
 2. Both training and test data are scored using `TranADScorer.score_batch()`, producing per-dimension MSE arrays.
@@ -341,13 +341,13 @@ After training completes (either via epoch limit or early stopping), the model i
 
 ### Multi-Machine Orchestration
 
-`train_all_machines.py` runs the training and evaluation pipeline across all four reference SMD machines (machine-1-1, machine-2-1, machine-3-2, machine-3-7) as separate subprocesses. This design isolates each machine's training (preventing GPU memory leaks between runs) while reusing the existing single-machine scripts.
+`code/1_train_model.py --all` runs the training and evaluation pipeline across all four reference SMD machines (machine-1-1, machine-2-1, machine-3-2, machine-3-7). Each machine's evaluation is run as a subprocess to isolate GPU memory.
 
 The script uses per-machine POT parameters from a hardcoded `POT_PARAMS` dictionary. After all machines complete, it prints a summary table comparing per-machine and average results against the paper's Table 2 values, and saves a summary JSON.
 
 ### Hyperparameter Sweep
 
-`sweep_smd.py` performs a grid search over training and scoring parameters. Each trial builds a `TranADConfig` from the parameter combination, trains with early stopping, scores, calibrates, evaluates, and logs results to a CSV. The sweep supports two grid sizes (quick: 48 combinations, full: 480) and can resume from a partially-completed CSV.
+`code/4_grid_sweep.py` performs a grid search over training and scoring parameters. Each trial builds a `TranADConfig` from the parameter combination, trains with early stopping, scores, calibrates, evaluates, and logs results to a CSV. After the sweep completes, the winning configuration is retrained end-to-end and saved to `models/tranad/best/`. The sweep supports two grid sizes (quick: 48 combinations, full: 480) and can resume from a partially-completed CSV.
 
 Key sweep findings that informed the default configuration:
 

@@ -1,14 +1,17 @@
 """
 Train TranAD on preprocessed SMD data.
 
-Loads normalized .npy arrays, builds sliding windows, trains the model,
-and saves a checkpoint. Supports adversarial loss (paper Eq. 8-9),
-configurable loss weighting, early stopping, and float64 dtype.
+Trains a baseline model with deliberately conservative defaults so you can
+see the pipeline working before optimizing. The grid sweep (code/4_grid_sweep.py)
+finds the best configuration and retrains a production-quality model.
+
+By default, checkpoints are saved to models/tranad/initial/ so the pre-trained
+reference artifacts in models/tranad/machine-*/ are never overwritten.
 
 Usage:
-    uv run python code/3_train_model.py --machine machine-1-1
-    uv run python code/3_train_model.py --machine machine-1-1 --epochs 20
-    uv run python code/3_train_model.py --all
+    uv run python code/1_train_model.py --machine machine-1-1
+    uv run python code/1_train_model.py --machine machine-1-1 --epochs 10
+    uv run python code/1_train_model.py --all
 """
 
 import argparse
@@ -19,16 +22,14 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.model import TranADConfig, TranADNet
+from src.model import TranADConfig
 from src.scorer import DEFAULT_POT_PARAMS, POTParams
-from src.train import EarlyStopping, train_epoch, validate_epoch
-from src.utils import auto_device, convert_to_windows
+from src.train import train_full
+from src.utils import auto_device
 
 MACHINES = ["machine-1-1", "machine-2-1", "machine-3-2", "machine-3-7"]
 
@@ -39,14 +40,38 @@ PAPER_RESULTS = {
     "avg_f1": 0.9605,
 }
 
+# Baseline defaults: an honest first attempt with a smaller feedforward
+# network and a moderate learning rate. Analogous to the LSTM repo's
+# hidden_dim=24 baseline -- a reasonable starting point that leaves room
+# for the grid sweep to find a better architecture and training config.
+BASELINE_DEFAULTS = {
+    "epochs": 5,
+    "lr": 0.001,
+    "d_feedforward": 8,
+    "loss_weighting": "epoch_inverse",
+    "scoring_mode": "phase2_only",
+    "early_stopping_patience": 3,
+    "val_split": 0.2,
+    "max_epochs": 30,
+}
+
 
 def train_single_machine(args, machine: str) -> float | None:
     """Train a single machine and return final loss, or None on failure."""
     data_dir = PROJECT_ROOT / args.data_dir
     output_dir = PROJECT_ROOT / args.output_dir
 
-    # Build config with overrides
-    config = TranADConfig()
+    # Build config: start from baseline defaults, apply CLI overrides
+    config = TranADConfig(
+        epochs=BASELINE_DEFAULTS["epochs"],
+        lr=BASELINE_DEFAULTS["lr"],
+        d_feedforward=BASELINE_DEFAULTS["d_feedforward"],
+        loss_weighting=BASELINE_DEFAULTS["loss_weighting"],
+        scoring_mode=BASELINE_DEFAULTS["scoring_mode"],
+        early_stopping_patience=BASELINE_DEFAULTS["early_stopping_patience"],
+        val_split=BASELINE_DEFAULTS["val_split"],
+        max_epochs=BASELINE_DEFAULTS["max_epochs"],
+    )
     if args.epochs is not None:
         config.epochs = args.epochs
     if args.batch_size is not None:
@@ -99,70 +124,10 @@ def train_single_machine(args, machine: str) -> float | None:
     print(f"  loss_weighting={config.loss_weighting}, adversarial={config.adversarial_loss}, "
           f"layer_norm={config.use_layer_norm}")
 
-    # Convert to tensor and build windows
-    torch_dtype = torch.float64 if config.dtype == "float64" else torch.float32
-    train_tensor = torch.from_numpy(train_data).to(torch_dtype)
-    windows = convert_to_windows(train_tensor, config.window_size)
-    print(f"Windows: {windows.shape}")
-
-    # Set up dataloaders
-    use_early_stopping = config.early_stopping_patience > 0
-    if use_early_stopping:
-        n_total = windows.shape[0]
-        n_val = int(n_total * config.val_split)
-        n_train = n_total - n_val
-        train_windows = windows[:n_train]
-        val_windows = windows[n_train:]
-
-        train_loader = DataLoader(TensorDataset(train_windows), batch_size=config.batch_size)
-        val_loader = DataLoader(TensorDataset(val_windows), batch_size=config.batch_size)
-        stopper = EarlyStopping(patience=config.early_stopping_patience)
-        total_epochs = config.max_epochs
-        print(f"Early stopping: patience={config.early_stopping_patience}, "
-              f"train={n_train}, val={n_val}")
-    else:
-        train_loader = DataLoader(TensorDataset(windows), batch_size=config.batch_size)
-        val_loader = None
-        stopper = None
-        total_epochs = config.epochs
-
-    # Create model
-    model = TranADNet(config).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {n_params:,}")
-
-    # Optimizer and scheduler
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=config.lr, weight_decay=config.weight_decay
+    # Train using the shared helper
+    model, final_epoch, epoch_loss = train_full(
+        config, train_data, device, seed=args.seed
     )
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, step_size=config.scheduler_step, gamma=config.scheduler_gamma
-    )
-    loss_fn = nn.MSELoss(reduction="none")
-
-    # Training loop
-    final_epoch = 0
-    epoch_loss = 0.0
-    for epoch in range(total_epochs):
-        epoch_loss = train_epoch(
-            model, train_loader, optimizer, loss_fn, epoch, config, device
-        )
-        scheduler.step()
-        lr = optimizer.param_groups[0]["lr"]
-        final_epoch = epoch + 1
-
-        if use_early_stopping and val_loader is not None and stopper is not None:
-            val_loss = validate_epoch(model, val_loader, loss_fn, epoch, config, device)
-            print(f"  Epoch {final_epoch}/{total_epochs}  "
-                  f"Train: {epoch_loss:.6f}  Val: {val_loss:.6f}  LR: {lr:.6f}")
-            if stopper.step(val_loss, model):
-                print(f"  Early stopping at epoch {final_epoch} "
-                      f"(patience={config.early_stopping_patience})")
-                stopper.restore_best(model)
-                break
-        else:
-            print(f"  Epoch {final_epoch}/{total_epochs}  "
-                  f"Loss: {epoch_loss:.6f}  LR: {lr:.6f}")
 
     # Save checkpoint
     ckpt_dir = output_dir / machine
@@ -172,8 +137,6 @@ def train_single_machine(args, machine: str) -> float | None:
         {
             "epoch": final_epoch - 1,
             "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(),
             "config": config,
             "final_loss": epoch_loss,
         },
@@ -198,8 +161,9 @@ def train_all_machines(args):
             print(f"\n  Evaluating {machine}...")
             eval_cmd = [
                 sys.executable,
-                str(PROJECT_ROOT / "code" / "4_evaluate_model.py"),
+                str(PROJECT_ROOT / "code" / "2_evaluate_model.py"),
                 "--machine", machine,
+                "--model-dir", args.output_dir,
                 "--device", args.device,
             ]
             pot = DEFAULT_POT_PARAMS.get(machine, POTParams())
@@ -263,16 +227,17 @@ def train_all_machines(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train TranAD on SMD")
+    parser = argparse.ArgumentParser(description="Train TranAD baseline on SMD")
     parser.add_argument("--machine", type=str, default="machine-1-1", help="Machine name")
     parser.add_argument("--all", action="store_true", help="Train all 4 reference machines")
     parser.add_argument("--machines", nargs="*", default=None,
                         help="Override machine list for --all")
     parser.add_argument("--data-dir", type=str, default="data/smd/processed")
-    parser.add_argument("--output-dir", type=str, default="models/tranad")
+    parser.add_argument("--output-dir", type=str, default="models/tranad/initial")
     parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
 
-    # Training hyperparameters
+    # Training hyperparameters (override baseline defaults)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)

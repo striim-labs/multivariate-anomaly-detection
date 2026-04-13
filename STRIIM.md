@@ -44,7 +44,7 @@ Key artifacts:
 | OP source | `striim/tranad-scorer/` | Striim Open Processor (Java, WAEvent pass-through) |
 | TQL | `striim/TRANAD.tql` | Striim application definition |
 | Test data | `data/smd/raw/test/machine-1-1.txt` | Raw SMD test data (38 comma-separated floats per line) |
-| Scoring API | `code/5_streaming_app.py` | FastAPI service wrapping the TranAD model |
+| Scoring API | `code/3_streaming_app.py` | FastAPI service wrapping the TranAD model |
 
 ---
 
@@ -60,7 +60,7 @@ docker compose -f docker-compose.rest.yml up --build
 Or without Docker:
 
 ```bash
-uv run uvicorn code.5_streaming_app:app --port 8000
+uv run uvicorn code.3_streaming_app:app --port 8000
 ```
 
 Verify:
